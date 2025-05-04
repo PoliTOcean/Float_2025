@@ -45,10 +45,12 @@
 **/
 typedef struct input_message {
   char message[INPUT_LEN];
+  float charge;
 } input_message;
 
 typedef struct output_message {
   uint8_t command = 0;
+  float params[3];
 } output_message;
 
 output_message output;
@@ -69,6 +71,7 @@ uint8_t message_rdy      = 0;     // Flag for signaling that a new message arriv
 int8_t  send_result      = -1;    // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t  status           = 0;     // State variable that is updated according to arriving messages and is used to feedback the CS when requested
 char    serialInput[BUFFER_SIZE]; // Serial software buffer used to empty the hardware one as soon as a new command arrives
+float   battery_charge   = 0;     // FLOAT battery charge, updated at last acknowledgement
 
 /** PROGRAM LOCAL FUNCTIONS **/
 /*
@@ -183,6 +186,19 @@ void serial_handler() {
       c = Serial.read();
     }
     for(int i=buffer_index; i<BUFFER_SIZE; i++) serialInput[i] = '\0'; // Fill the rest of the array with string terminators
+
+    if (strcmp(serialInput, "PARAMS") == 0) {
+      for (int i=0; i<3; i++) {
+        buffer_index = 0;                                        
+        c = Serial.read();
+        while (c != '\n' && Serial.available()) {                  
+          serialInput[buffer_index++] = c;                                
+          c = Serial.read();
+        }
+        memcpy(output.params[i], serialInput, sizeof(serialInput));
+      }
+      memcpy(serialInput, "PARAMS", sizeof("PARAMS"));
+    }
   }
 }
 
@@ -221,6 +237,9 @@ void loop() {
     
     Serial.println(input.message);                                                           // Sends incoming message on Serial channel 
 //                                                                                              for real time feedback to the CS
+    Serial.println(input.charge);
+    battery_charge = input.charge;
+
     if (strcmp(input.message, "SWITCH_AM_RECVD") == 0) auto_mode_active = !auto_mode_active; // If AM toggle command succeeded,
 //                                                                                              toggles flag for feedback purposes
     message_rdy = 0;                                                                         // Releases the lock on the message container
@@ -239,6 +258,7 @@ void loop() {
     else if (strcmp(serialInput, "SWITCH_AUTO_MODE" ) == 0) send_command(5, MAX_CONN_TIME);
     else if (strcmp(serialInput, "SEND_PACKAGE"     ) == 0) send_command(6, MAX_CONN_TIME);
     else if (strcmp(serialInput, "TRY_UPLOAD"       ) == 0) send_command(7, MAX_CONN_TIME);
+    else if (strcmp(serialInput, "PARAMS"           ) == 0) send_command(8, MAX_CONN_TIME);
     else if (strcmp(serialInput, "STATUS"           ) == 0) {
       // status driven switch that sends a status string to the CS if requested
       switch (status) { 
@@ -263,8 +283,10 @@ void loop() {
 
       result = send_command(0, MAX_CONN_TIME); // Sends a dummy package (command code 0) to the FLOAT to detect connection state
       Serial.print(" | ");
-      if (result) Serial.println("CONN_OK");
-      else        Serial.println("CONN_LOST");
+      if (result) Serial.print("CONN_OK");
+      else        Serial.print("CONN_LOST");
+      Serial.print(" | ");
+      Serial.println(battery_charge);
     }
 
     serial_rdy = 0;                            // Releases the lock on the command container

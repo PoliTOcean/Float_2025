@@ -58,6 +58,7 @@
 #define CMD4_ACK        "CMD4_RECVD"
 #define CMD5_ACK        "SWITCH_AM_RECVD"
 #define CMD7_ACK        "TRY_UPLOAD_RECVD"
+#define CMD8_ACK        "CHNG_PARMS_RECVD"
 
 /** I/O STRUCTS 
   Structs containing message and command for communication over MAC. 
@@ -66,10 +67,12 @@
 **/
 typedef struct output_message {
   char message[OUTPUT_LEN];
+  float charge;
 } output_message;
 
 typedef struct input_message {
   uint8_t command = 0;
+  float params[3];
 } input_message;
 
 output_message output;
@@ -90,31 +93,43 @@ const uint8_t  DIR               = 12;         // Pin for motor direction drivin
 const uint8_t  STEP              = 14;         // Pin for motor tension driving (used as PWM)
 const uint8_t  EN                = 27;         // Active-low pin for motor enabling
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles to complete in order to gain maximum points
-const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
-const uint16_t STEP_FREQ         = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
+const uint8_t  R_PIN             = 19          // Pin of the RED LED
+const uint8_t  G_PIN             = 18          // Pin of the GREEN LED
+const uint8_t  B_PIN             = 5           // Pin of the BLUE LED
 const uint16_t MEAS_PERIOD       = 100;        // Period between two consecutive measurements during immersion phase, expressed in ms
 const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive writes to microSD during immersion phase, expressed in ms
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
+const uint32_t MAX_STEPS         = 2000        // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
+const int8_t   MAX_TARGET        = -1          // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
+const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
+const float    TARGET_DEPTH      = 2.5;        // Target depth to be met and mantained when sinking, expressed in m
+const float    STAT_TIME         = 50;         // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
 
 /** PROGRAM GLOBAL VARIABLES **/
 uint8_t  meas_cnt         = 0;  // Number of measurements occurred since the last write to microSD, must be reset before each profile
 uint8_t  profile_count    = 0;  // Number of profiles committed since startup
 uint8_t  auto_mode_active = 0;  // 1 if AM is active, 0 otherwise
-uint8_t  float_stopped    = 0;  // Set to 1 when the FLOAT is sensed to be stationary during immersion phase, must be reset before each profile
-uint8_t  motor_stopped    = 0;  // Set to 1 after the motor finishes its rotation during immersion phase, must be reset before each profile
 uint8_t  idle             = 0;  // 1 if in idle phase, 0 otherwise
 uint8_t  auto_committed   = 0;  // During immersion phase, 1 if immersion has been triggered by AM, 0 otherwise
+uint8_t  r_v,g_v,b_v      = 0;  // Intensity (duty cycle) values for each RGB LED 
+uint8_t  led_state        = 0;  // Tells about the RGB LED being on or off
 int8_t   send_result      = -1; // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t   status           = 0;  // Status of the FLOAT, drives the main switch and keeps track of the current phase
 uint16_t new_data         = 0;  // During idle phase, 1 if ready-to-send data is in microSD, 0 otherwise
 uint16_t file_read_ptr    = 0;  // Pointer to the location of the last read byte in the microSD data file
 uint16_t file_write_ptr   = 0;  // Pointer to the location of the last written byte in the microSD data file
+uint16_t led_blink        = 0;  // Blinking period for the RGB LED, expressed in ms
+uint32_t current_step     = 0;  // Number of steps done by the motor in the same direction wrt its initial position
+uint64_t blink_ref        = 0;  // Time reference for the blinking period of the RGB LED
 uint64_t time_ref         = 0;  // Time reference for writing on the microSD during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
 float    depth            = 0;  // Depth measured during immersion phase, writed in microSD and used to sense FLOAT stationarity, expressed in Pa
-float    prevDepth        = 0;  // Depth of previous measurement, used during immersion phase to sense FLOAT stationarity, expressed in Pa.
+float    Kp               = 1;  // PID parameters, modifiable with a specific command
+float    Kd               = 0;
+float    Ki               = 0;  
+float    depth_integral   = 0;  // Integral of the depth values measured in a profile. Used for PID calculations.
 //                                 Must be reset before each profile
 
 /** PROGRAM LOCAL FUNCTIONS **/
@@ -139,8 +154,7 @@ float    prevDepth        = 0;  // Depth of previous measurement, used during im
 */
 void OnDataRecv (const uint8_t * mac, const uint8_t * incomingData, int len) {
 
-  if (input.command == 0) memcpy(&input, incomingData, sizeof(input));
-  
+  if (input.command == 0) memcpy(&input, incomingData, sizeof(input));  
 }
 
 /*
@@ -270,27 +284,123 @@ void write_SD () {
 *               if the first is a multiple of the latter. The FLOAT is signalled as stationary
 *               when two depth measurements in a row are equal within an EPSILON of error.
 *
-* Argument(s) : none
+* Argument(s) : targetDepth, time
 *
 * Return(s)   : none
 *********************************************************************************************************
 */
-void measure () {
-  sensor.read();                                  // Reads measurements of the Bar02 pressure sensor, updating the sensor object
-  f_depth();                                      // Calculates depth value
-  meas_cnt++;                                  
-  if (meas_cnt >= (WRITE_PERIOD / MEAS_PERIOD)) { // Checks if enough measurements occurred since the last write on microSD,
-    write_SD();                                   // before writing again on it
-    meas_cnt = 0;                                 
+void measure (float targetDepth, float time) {
+  uint8_t elapsed_stat = 0;
+  uint8_t motor_stopped = 1;
+  const uint16_t REV_FREQ = 300;
+  uint64_t prec_time_meas = millis();                 // Stores time reference for measurement period timer
+  uint64_t start_time = millis();
+  float prevDepth = 0;
+  float rev_time = 0;   
+  integral = 0;
+
+  while(true) {                                       // Waits for the FLOAT to stop
+    if (millis() - prec_time_meas > MEAS_PERIOD) {    // Every MEAS_PERIOD ms reads from the sensor and tries to detect if FLOAT
+//                                                       stopped after updating the motor PWM using the PID output. 
+//                                                       It also writes to microSD every WRITE_PERIOD ms
+      prec_time_meas = millis();                      // Resets the MEAS_PERIOD timer for next measurement
+      
+      LED_check_for_blink();                          // Makes the RGB LED blink at set period
+
+      sensor.read();                                  // Reads measurements of the Bar02 pressure sensor, updating the sensor object
+      f_depth();                                      // Calculates depth value
+      meas_cnt++;                                  
+      if (meas_cnt >= (WRITE_PERIOD / MEAS_PERIOD)) { // Checks if enough measurements occurred since the last write on microSD,
+        write_SD();                                   // before writing again on it
+        meas_cnt = 0;                                 
+      }
+
+      if (targetDepth == 0 || targetDepth == MAX_TARGET) {
+        if (motor_stopped) {
+          if (targetDepth == MAX_TARGET) {
+            rev_time = ((MAX_STEPS-current_step) / (float) REV_FREQ) * 1000; 
+            digitalWrite(DIR, 0);
+            current_step = MAX_STEPS;
+          }
+          else {
+            rev_time = (current_step/ (float) REV_FREQ) * 1000; // time of motor revolution in ms
+            digitalWrite(DIR, 1);
+            current_step = 0;
+          }
+          analogWriteFrequency(REV_FREQ);
+          motor_stopped = 0;
+        } else {
+          if (millis() - start_time > rev_time) {
+            analogWriteFrequency(0);
+            if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
+              elapsed_stat++;
+              if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
+            }
+          }
+        }
+      } else {
+        // PID output calculations ---
+        float error = targetDepth - depth;
+        float velocity = (prevDepth - depth) / (MEAS_PERIOD / 1000);
+        integral += error * (MEAS_PERIOD / 1000); 
+        float PID_res = error * Kp + velocity * Kd + integral * Ki;
+        // ---------------------------
+
+        if (PID_res >= 0) {
+          //if (PID_res > 1000) PID_res = 1000;          // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
+          digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
+          analogWriteFrequency(PID_res);
+        } else {
+          //if (-PID_res > 1000) PID_res = -1000;
+          digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
+          analogWriteFrequency(-PID_res);
+        }
+        current_step += (uint32_t) (PID_res * (MEAS_PERIOD/ (float) 1000));
+
+        if (target < depth + MAX_ERROR && target > depth - MAX_ERROR) {
+          elapsed_stat++;
+          if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
+        }
+      }
+
+      Serial.print("The just read depth is: ");
+      Serial.println(depth);
+      
+      prevDepth = depth;                             // Updates previous depth measurement with the last one
+    }
   }
-  //Serial.print("The just read depth is: ");
-  //Serial.println(depth);
-  if (motor_stopped) {                            // The logic activates only after the motor has stopped to be sure that the FLOAT is already moving 
-    if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON)
-      float_stopped = 1;                          // If a measurement is equal to the previous in a range of double EPSILON,
-//                                                   it signals that the FLOAT is stationary by setting float_stopped flag
-  }
-  prevDepth = depth;                              // Updates previous depth measurement with the last one
+}
+
+void setLED (uint8_t R, uint8_t G, uint8_t B, uint16_t period) {
+  r_v = R; g_v = G; b_v = B; led_blink = period;
+  LED_on();
+} 
+
+void toggleLED () {
+  if (led_state) LED_off;
+  else LED_on;
+}
+
+void LED_on () {
+  analogWrite(R_PIN, r_v);
+  analogWrite(G_PIN, g_v);
+  analogWrite(B_PIN, b_v);
+  led_state = 1;
+}
+
+void LED_off () {
+  analogWrite(R_PIN, 0);
+  analogWrite(G_PIN, 0);
+  analogWrite(B_PIN, 0);
+  led_state = 0;
+}
+
+void LED_check_for_blink () {
+  if (millis() - blink_ref > led_blink) {
+    if (LED_blink == 0) LED_on();
+    else toggleLED();  
+    blink_ref = millis();
+  } 
 }
 
 /** SETUP **/
@@ -299,6 +409,9 @@ void setup () {
 
   pinMode(STEP, OUTPUT);                                               // Pin assignment
   pinMode(DIR, OUTPUT); 
+  pinMode(R_PIN, OUTPUT);                                                 // R LED
+  pinMode(G_PIN, OUTPUT);                                                 // G LED
+  pinMode(B_PIN, OUTPUT);                                                 // B LED
   pinMode(EN, OUTPUT);
   digitalWrite(EN, HIGH);                                              // Disables the motor until needed
 
@@ -343,7 +456,11 @@ void loop () {
       {
         uint8_t result;
 
-        auto_committed = 0;                                                        
+        auto_committed = 0;  
+
+        if (charge < BATT_THRESH)                                                   // If battery charge is low, yellow blinking LED 
+          setLED(255, 255, 0, 350);  
+        else setLED(0, 255, 0, 750);                                                // Else, green blinking LED                                                   
 
         if (!idle) input.command = 0;                                               // If not already waiting for a command (1st idle loop), resets the command.
 //                                                                                     This check is necessary as the new command can arrive 
@@ -359,8 +476,11 @@ void loop () {
 //                                                                                     routines, the FLOAT is set in idle only if the ack arrives
           uint64_t prec_time = millis();                                            // Stores a time reference for the CONN_CHECK_PERIOD timer
 
-          while ((millis() - prec_time < CONN_CHECK_PERIOD) && input.command == 0); // Waits for a new command to arrive or for CONN_CHECK_PERIOD 
-//                                                                                     milliseconds to elapse
+          while ((millis()-prec_time < CONN_CHECK_PERIOD) && input.command == 0) {  // Waits for a new command to arrive or for CONN_CHECK_PERIOD 
+//                                                                                     milliseconds to elapse. In the meantime, the RGB LED is made blink
+            LED_check_for_blink();
+          }
+
           status = input.command;                                                   // Copies the input struct command into the status driving the 
 //                                                                                     main switch. If the time elapsed, the command may be 0   
         } else if (profile_count < MAX_PROFILES && auto_mode_active) {              // If the acknowledgement failed, AM is active and the FLOAT
@@ -371,8 +491,11 @@ void loop () {
 //                                                                                     each command completion  
           status = 1;                                                               // Sets immersion status, committing a profile
         }
-        if (status != 0) idle = 0;                                                  // If a command has been committed, signals to other logics
+        if (status != 0) {
+          idle = 0;                                                                 // If a command has been committed, signals to other logics
 //                                                                                     that the FLOAT exited idle phase. 
+          setLED(255, 127, 0, 0);                                                   // Orange fixed LED for the command execution time (can be overwritten)
+        }
       }//                                                                              Otherwise, the case 0 repeats remaining in idle                                      
       break;
     case 1: // Profile commit and measuring
@@ -385,37 +508,31 @@ void loop () {
 
           result = send_message(CMD1_ACK, 1000);                     // If file succeeds to open, tries to send an acknowledgement to CS
           if (result || auto_committed) {                            // If ack arrived or AM committed the profile, starts immersion phase
-            uint64_t prec_time_rot = millis();                       // Stores time reference for motor rotation timer
-            uint64_t prec_time_meas = millis();                      // Stores time reference for measurement period timer
+            
+            if (auto_committed)
+              setLED(255, 0, 0, 1000);                               // If AM committed, red blinking LED
+            else setLED(0, 0, 255, 1000);                            // Else, blue blinking LED
 
-            prevDepth = 0;
             meas_cnt = 0;
             time_ref = millis();                                     // Stores time reference for the entire profile. Used in microSD writing
             profile_count++;                                         // Increases the global counter of committed profiles
             file_read_ptr = file_write_ptr;                          // If old profile data is written on microSD, discards it
+            analogWriteFrequency(0);                                 // Sets analog PWM generator frequency to 0                                      
+            analogWrite(STEP, 127);                                  // Sets the duty cycle of the generated PWM to 50%
+            digitalWrite(EN, LOW);                                   // Enables motor
 
-            for (int i=0; i<2; i++) {                                // Logic repeats two times: one for descending phase and the other for ascending phase
-              float_stopped = 0;                                     
-              motor_stopped = 0;                                     
-              digitalWrite(DIR, i);                                  // Sets DIR pin with the needed rotation direction. In this case is 0 and then 1
-              analogWriteFrequency(STEP_FREQ);                       // Sets analog PWM generator frequency to STEP_FREQ
-              analogWrite(STEP, 127);                                // Sets the duty cycle of the generated PWM to 50%
-              digitalWrite(EN, LOW);                                 // Enables motor
-              while(!float_stopped || !motor_stopped) {              // Waits for the motor and the FLOAT to stop
-                if (millis() - prec_time_meas > MEAS_PERIOD) {       // Every MEAS_PERIOD ms reads from the sensor and tries to detect if FLOAT
-//                                                                      stopped. It also writes to microSD every WRITE_PERIOD ms
-                  prec_time_meas = millis();                         // Resets the MEAS_PERIOD timer for next measurement
-                  measure();                                         // measure function will set the float_stopped flag when detects stationarity
-                }
-                if (millis() - prec_time_rot > ROT_TIME) {           // When ROT_TIME milliseconds elapse from prec_time_rot set,
-                  analogWrite(STEP, 0);                              // stops the motor (duty cycle at 0%),
-                  analogWriteFrequency(1000);                        // resets the PWM generator frequency,
-                  digitalWrite(EN, HIGH);                            // and disables the motor
-                  motor_stopped = 1;                                 // Sets motor stop flag
-                }
+            for (int i=0; i<3; i++) {                                // Logic repeats three times: two for descending phase and the last for ascending phase
+              switch (i) {
+                case 0: measure(TARGET_DEPTH, STAT_TIME); break;     // measure function will drive the FLOAT and                    
+                case 1: measure(MAX_TARGET, 0); break;               // returns when detects stationarity for a requested time period
+                case 2: measure(0, 0); break;
+                default: break;
               }
-              prec_time_rot = millis();                              // Resets ROT_TIME timer for the ascending phase
             }
+
+            analogWrite(STEP, 0);                                    // stops the motor (duty cycle at 0%),
+            analogWriteFrequency(1000);                              // resets the PWM generator frequency,
+            digitalWrite(EN, HIGH);                                  // and disables the motor
 
             myFile.println("STOP_DATA");               // Adds a profile-data terminator to the file
             myFile.flush();                            // Commits the write
@@ -540,11 +657,24 @@ void loop () {
         status = 0;
       }
       break;
-    //case 8: // New command routine
+    case 8: // PID Params change
+      {
+        uint8_t result;
+    
+        result = send_message(CMD8_ACK, 1000); 
+        if (result) {
+          Kp = input.params[0];
+          Kd = input.params[1]; 
+          Ki = input.params[2];
+        }
+        status = 0; // Returns to idle
+      }
+      break;
+    //case 9: // New command routine
     //  {
     //    uint8_t result;
     //
-    //    result = send_message(CMD8_ACK, 1000); 
+    //    result = send_message(CMD9_ACK, 1000); 
     //    if (result) {
     //      // Insert here your code
     //    }
