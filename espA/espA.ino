@@ -42,6 +42,7 @@
 #include <AsyncTCP.h>          // Library for TCP connection protocol interface, used by ESPAsyncWebServer.h        | v1.1.4
 #include <ESPAsyncWebServer.h> // Library for creation of a web server running on ESP32 , used by AsyncElegantOTA.h | v2.10.8
 #include <AsyncElegantOTA.h>   // Library for creation of the OTA web page for new firmware uploading               | v2.2.8
+#include <INA.h>               // Library for programming of the INA220 current and voltage monitor                 |    /
 
 /** DEFINES **/
 #ifndef ESPA_INO
@@ -79,6 +80,7 @@ output_message output;
 input_message  input;
 
 /** LIBRARY VARIABLES **/
+INA_Class           INA;      // Object for INA220 interfacing
 MS5837              sensor;   // Object for Bar02 interfacing
 File                myFile;   // File object pointing to the microSD file currently modified
 esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we want to connect with
@@ -93,19 +95,22 @@ const uint8_t  DIR               = 12;         // Pin for motor direction drivin
 const uint8_t  STEP              = 14;         // Pin for motor tension driving (used as PWM)
 const uint8_t  EN                = 27;         // Active-low pin for motor enabling
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles to complete in order to gain maximum points
-const uint8_t  R_PIN             = 19          // Pin of the RED LED
-const uint8_t  G_PIN             = 18          // Pin of the GREEN LED
-const uint8_t  B_PIN             = 5           // Pin of the BLUE LED
+const uint8_t  R_PIN             = 19;         // Pin of the RED LED
+const uint8_t  G_PIN             = 18;         // Pin of the GREEN LED
+const uint8_t  B_PIN             = 5;          // Pin of the BLUE LED
 const uint16_t MEAS_PERIOD       = 100;        // Period between two consecutive measurements during immersion phase, expressed in ms
 const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive writes to microSD during immersion phase, expressed in ms
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
-const uint32_t MAX_STEPS         = 2000        // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
-const int8_t   MAX_TARGET        = -1          // Encodes the pool bottom as target when given as parameter to the measure() function
+const uint16_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
+const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
+const uint32_t MAX_STEPS         = 2000;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
+const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
 const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
 const float    TARGET_DEPTH      = 2.5;        // Target depth to be met and mantained when sinking, expressed in m
 const float    STAT_TIME         = 50;         // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
+const float    BATT_THRESH       = 7000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 
 /** PROGRAM GLOBAL VARIABLES **/
 uint8_t  meas_cnt         = 0;  // Number of measurements occurred since the last write to microSD, must be reset before each profile
@@ -115,6 +120,7 @@ uint8_t  idle             = 0;  // 1 if in idle phase, 0 otherwise
 uint8_t  auto_committed   = 0;  // During immersion phase, 1 if immersion has been triggered by AM, 0 otherwise
 uint8_t  r_v,g_v,b_v      = 0;  // Intensity (duty cycle) values for each RGB LED 
 uint8_t  led_state        = 0;  // Tells about the RGB LED being on or off
+uint8_t  deviceNumber     = -1; // Number for the I2C interface of the INA220
 int8_t   send_result      = -1; // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t   status           = 0;  // Status of the FLOAT, drives the main switch and keeps track of the current phase
 uint16_t new_data         = 0;  // During idle phase, 1 if ready-to-send data is in microSD, 0 otherwise
@@ -292,12 +298,11 @@ void write_SD () {
 void measure (float targetDepth, float time) {
   uint8_t elapsed_stat = 0;
   uint8_t motor_stopped = 1;
-  const uint16_t REV_FREQ = 300;
   uint64_t prec_time_meas = millis();                 // Stores time reference for measurement period timer
   uint64_t start_time = millis();
   float prevDepth = 0;
   float rev_time = 0;   
-  integral = 0;
+  depth_integral = 0;
 
   while(true) {                                       // Waits for the FLOAT to stop
     if (millis() - prec_time_meas > MEAS_PERIOD) {    // Every MEAS_PERIOD ms reads from the sensor and tries to detect if FLOAT
@@ -342,8 +347,8 @@ void measure (float targetDepth, float time) {
         // PID output calculations ---
         float error = targetDepth - depth;
         float velocity = (prevDepth - depth) / (MEAS_PERIOD / 1000);
-        integral += error * (MEAS_PERIOD / 1000); 
-        float PID_res = error * Kp + velocity * Kd + integral * Ki;
+        depth_integral += error * (MEAS_PERIOD / 1000); 
+        float PID_res = error * Kp + velocity * Kd + depth_integral * Ki;
         // ---------------------------
 
         if (PID_res >= 0) {
@@ -357,7 +362,7 @@ void measure (float targetDepth, float time) {
         }
         current_step += (uint32_t) (PID_res * (MEAS_PERIOD/ (float) 1000));
 
-        if (target < depth + MAX_ERROR && target > depth - MAX_ERROR) {
+        if (targetDepth < depth + MAX_ERROR && targetDepth > depth - MAX_ERROR) {
           elapsed_stat++;
           if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
         }
@@ -397,7 +402,7 @@ void LED_off () {
 
 void LED_check_for_blink () {
   if (millis() - blink_ref > led_blink) {
-    if (LED_blink == 0) LED_on();
+    if (led_blink == 0) LED_on();
     else toggleLED();  
     blink_ref = millis();
   } 
@@ -409,9 +414,9 @@ void setup () {
 
   pinMode(STEP, OUTPUT);                                               // Pin assignment
   pinMode(DIR, OUTPUT); 
-  pinMode(R_PIN, OUTPUT);                                                 // R LED
-  pinMode(G_PIN, OUTPUT);                                                 // G LED
-  pinMode(B_PIN, OUTPUT);                                                 // B LED
+  pinMode(R_PIN, OUTPUT);                                              // R LED
+  pinMode(G_PIN, OUTPUT);                                              // G LED
+  pinMode(B_PIN, OUTPUT);                                              // B LED
   pinMode(EN, OUTPUT);
   digitalWrite(EN, HIGH);                                              // Disables the motor until needed
 
@@ -437,6 +442,30 @@ void setup () {
     return;
   }
 
+  for (uint8_t j=0; j<3; j++) {
+    uint8_t devicesFound = INA.begin(12, 100000);                      // Inits INA220, with maximum expected tension and initial shunt resistance
+    Serial.println("Found device: ");
+    Serial.println(INA.getDeviceName(devicesFound - 1));
+    for (uint8_t i=0; i < devicesFound; i++) {
+      if (strcmp(INA.getDeviceName(i), "INA220") == 0) {
+        deviceNumber = i;
+        INA.reset(deviceNumber);                                       // Reset device to default settings
+        break;
+      }
+    }
+    if (deviceNumber == UINT8_MAX) {
+      Serial.print(F("No INA found. Waiting 2s and retrying...\n"));
+      delay(2000);
+    }
+  }
+
+  Serial.print(F("Found INA at device number "));
+  Serial.println(deviceNumber);
+  Serial.println();
+  INA.setAveraging(64, deviceNumber);                                  // Average each reading 64 times
+  INA.setBusConversion(8244, deviceNumber);                            // Maximum conversion time 8.244ms
+  INA.setMode(INA_MODE_CONTINUOUS_BUS, deviceNumber);                  // Bus/shunt measured continuously
+
   sensor.setModel(1);                                                  // Inits Bar02 by specifing model,
   while (!sensor.init()) {
     Serial.println("Init failed!");
@@ -458,7 +487,10 @@ void loop () {
 
         auto_committed = 0;  
 
-        if (charge < BATT_THRESH)                                                   // If battery charge is low, yellow blinking LED 
+        INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
+        output.charge = (float) INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
+
+        if (output.charge < BATT_THRESH)                                            // If battery charge is low, yellow blinking LED 
           setLED(255, 255, 0, 350);  
         else setLED(0, 255, 0, 750);                                                // Else, green blinking LED                                                   
 
@@ -582,7 +614,7 @@ void loop () {
         result = send_message(CMD3_ACK, 1000);
         if (result) { // Commands execute only if their ack sending succeeds
           digitalWrite(DIR, 1);
-          analogWriteFrequency(STEP_FREQ);
+          analogWriteFrequency(REV_FREQ);
           analogWrite(STEP, 127);
           digitalWrite(EN, LOW);
           delay(ROT_TIME);

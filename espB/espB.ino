@@ -195,7 +195,7 @@ void serial_handler() {
           serialInput[buffer_index++] = c;                                
           c = Serial.read();
         }
-        memcpy(output.params[i], serialInput, sizeof(serialInput));
+        memcpy(&output.params[i], serialInput, sizeof(serialInput));
       }
       memcpy(serialInput, "PARAMS", sizeof("PARAMS"));
     }
