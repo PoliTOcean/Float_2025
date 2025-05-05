@@ -3,7 +3,7 @@
 *                            Code of the ESP32 on the FLOAT board (ESPA)
 *
 * Filename: EspA.ino
-* Version: 8.1.1
+* Version: 8.2.0
 * Developers: Fachechi Gino Marco, Gullotta Salvatore
 * Company: Team PoliTOcean @ Politecnico di Torino
 * Arduino board package: esp32 by Espressif Systems, v2.0.17
@@ -16,7 +16,7 @@
 * the FLOAT communicates to CS that it is listening and
 * waits for the next command to execute. The idle acknowledgement
 * is sended every CONN_CHECK_PERIOD milliseconds.
-* In case the microSD has some data to send, the acknowledgement
+* In case the EEPROM has some data to send, the acknowledgement
 * informs the CS of that, too.
 * If the ack fails to be delivered, the FLOAT can enter in Auto Mode
 * (hereinafter shortened to as AM), that commits automatically a profile. 
@@ -37,8 +37,7 @@
 #include <esp_now.h>           // Esp_now library for WiFi connections establishing and management                  |    /
 #include <WiFi.h>              // Layer for proper initialization and setting of ESP32 WiFi module                  |    /
 #include <Wire.h>              // Library for I2C connection protocol interface, used by MS5837.h and RTClib.h      |    /
-#include <SPI.h>               // Library for SPI connection protocol interface, used by SD.h                       |    /
-#include <SD.h>                // An SDcard control interface                                                       | v1.2.4
+#include <EEPROM.h>            // Library for EEPROM read/write operations                                          |    /
 #include <AsyncTCP.h>          // Library for TCP connection protocol interface, used by ESPAsyncWebServer.h        | v1.1.4
 #include <ESPAsyncWebServer.h> // Library for creation of a web server running on ESP32 , used by AsyncElegantOTA.h | v2.10.8
 #include <AsyncElegantOTA.h>   // Library for creation of the OTA web page for new firmware uploading               | v2.2.8
@@ -50,7 +49,7 @@
 #endif
 
 #define OUTPUT_LEN      250               // Length of the output on the MAC layer 
-#define FILE_NAME       "/FLOAT_data.txt" // Name of the file containing FLOAT measurements
+#define EEPROM_SIZE     4096              // EEPROM allocation size in bytes
 // List of messages for the ESPA acknoledgements: CS has to be aware of these 
 #define IDLE_ACK        "FLOAT_IDLE"        
 #define IDLE_W_DATA_ACK "FLOAT_IDLE_W_DATA"
@@ -82,7 +81,6 @@ input_message  input;
 /** LIBRARY VARIABLES **/
 INA_Class           INA;      // Object for INA220 interfacing
 MS5837              sensor;   // Object for Bar02 interfacing
-File                myFile;   // File object pointing to the microSD file currently modified
 esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we want to connect with
 AsyncWebServer      server(80);
 // Esp_now constant for peer MAC address value. Replace with the MAC address of your receiver (ESPB) 
@@ -99,7 +97,7 @@ const uint8_t  R_PIN             = 19;         // Pin of the RED LED
 const uint8_t  G_PIN             = 18;         // Pin of the GREEN LED
 const uint8_t  B_PIN             = 5;          // Pin of the BLUE LED
 const uint16_t MEAS_PERIOD       = 100;        // Period between two consecutive measurements during immersion phase, expressed in ms
-const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive writes to microSD during immersion phase, expressed in ms
+const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive writes to EEPROM during immersion phase, expressed in ms
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
 const uint16_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
@@ -113,7 +111,7 @@ const float    STAT_TIME         = 50;         // Time period in which the FLOAT
 const float    BATT_THRESH       = 7000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 
 /** PROGRAM GLOBAL VARIABLES **/
-uint8_t  meas_cnt         = 0;  // Number of measurements occurred since the last write to microSD, must be reset before each profile
+uint8_t  meas_cnt         = 0;  // Number of measurements occurred since the last write to EEPROM, must be reset before each profile
 uint8_t  profile_count    = 0;  // Number of profiles committed since startup
 uint8_t  auto_mode_active = 0;  // 1 if AM is active, 0 otherwise
 uint8_t  idle             = 0;  // 1 if in idle phase, 0 otherwise
@@ -123,15 +121,14 @@ uint8_t  led_state        = 0;  // Tells about the RGB LED being on or off
 uint8_t  deviceNumber     = -1; // Number for the I2C interface of the INA220
 int8_t   send_result      = -1; // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t   status           = 0;  // Status of the FLOAT, drives the main switch and keeps track of the current phase
-uint16_t new_data         = 0;  // During idle phase, 1 if ready-to-send data is in microSD, 0 otherwise
-uint16_t file_read_ptr    = 0;  // Pointer to the location of the last read byte in the microSD data file
-uint16_t file_write_ptr   = 0;  // Pointer to the location of the last written byte in the microSD data file
+uint16_t eeprom_read_ptr  = 0;  // Pointer to the location of the last read byte in EEPROM
+uint16_t eeprom_write_ptr = 0;  // Pointer to the location of the next available byte in EEPROM
 uint16_t led_blink        = 0;  // Blinking period for the RGB LED, expressed in ms
 uint32_t current_step     = 0;  // Number of steps done by the motor in the same direction wrt its initial position
 uint64_t blink_ref        = 0;  // Time reference for the blinking period of the RGB LED
-uint64_t time_ref         = 0;  // Time reference for writing on the microSD during immersion phase, updated at each profile start
+uint64_t time_ref         = 0;  // Time reference for writing on the EEPROM during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
-float    depth            = 0;  // Depth measured during immersion phase, writed in microSD and used to sense FLOAT stationarity, expressed in Pa
+float    depth            = 0;  // Depth measured during immersion phase, written to EEPROM and used to sense FLOAT stationarity, expressed in Pa
 float    Kp               = 1;  // PID parameters, modifiable with a specific command
 float    Kd               = 0;
 float    Ki               = 0;  
@@ -238,44 +235,44 @@ float f_depth () {
 
 /*
 *********************************************************************************************************
-*                                           write_SD()
+*                                           write_EEPROM()
 *
-* Description : Writes to the microSD mounted on the board. In particular it writes a single line
+* Description : Writes to the EEPROM mounted on the board. In particular it writes a single line
 *               containing all the data needed by the CS, wrapped in a JSON format and terminated 
-*               by a new line. The write starts after the last written byte in the file. The 
-*               function finally updates the file_write_ptr pointer with the position
-*               following the last written byte in the file (the new line). The data is mostly 
-*               provided by the sensor object which has to be updated before calling this
-*               function, by calling sensor.read function. 
+*               by a new line character ('\n'). The write starts at the current eeprom_write_ptr.
+*               The function finally updates the eeprom_write_ptr pointer. If EEPROM is full,
+*               it stops writing. The data is mostly provided by the sensor object which has to be
+*               updated before calling this function, by calling sensor.read function.
 *
 * Argument(s) : none
 *
 * Return(s)   : none
 *********************************************************************************************************
 */
-void write_SD () {
-  if (myFile) {                                // Checks if the file is open and the File pointer is valid
-    myFile.seek(file_write_ptr);               // Puts the file cursor on the position stored in file_write_ptr.
-//                                                The following writes will start from that position
-    // Writes company number,
-    myFile.print("{\"company_number\":\"EX16\",\"pressure\":\"");
-    // pressure as measured from the bottom of the FLOAT: the multiplication is for m to Pa conversion in water,
-    myFile.print(sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH*10000));
-    myFile.print("\",\"depth\":\"");
-    // depth value as calculated from f_depth function, in m,
-    myFile.print(depth);
-    myFile.print("\",\"temperature\":\"");
-    // temperature in Celsius,
-    myFile.print(sensor.temperature());
-    myFile.print("\",\"mseconds\":\"");
-    // milliseconds elapsed from the profile start
-    myFile.print((millis() - time_ref));
-    myFile.println("\"}");
-    myFile.flush();                            // Commits the writes
-    file_write_ptr = myFile.position();        // Stores file cursor for next writes
-    new_data = file_write_ptr - file_read_ptr; // Updates the new_data variable with the delta in bytes between 
-//                                                already-read data and the still-to-read one
-  } //else Serial.println("write_SD(): error in opening file!");
+void write_EEPROM () {
+  char data_buffer[OUTPUT_LEN]; // Buffer to hold the formatted string
+
+  // Format the data string
+  snprintf(data_buffer, OUTPUT_LEN,
+           "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%llu\"}\n",
+           sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH * 10000),
+           depth,
+           sensor.temperature(),
+           (millis() - time_ref));
+
+  int data_len = strlen(data_buffer);
+
+  // Check if there is enough space in EEPROM
+  if (eeprom_write_ptr + data_len < EEPROM_SIZE) {
+    for (int i = 0; i < data_len; i++) {
+      EEPROM.write(eeprom_write_ptr + i, data_buffer[i]);
+    }
+    eeprom_write_ptr += data_len; // Update the write pointer
+    EEPROM.commit(); // Commit changes to EEPROM
+  } else {
+    // Handle EEPROM full condition (e.g., log an error, stop writing)
+    Serial.println("write_EEPROM(): EEPROM full!");
+  }
 }
 
 /*
@@ -283,12 +280,10 @@ void write_SD () {
 *                                           measure()
 *
 * Description : The function is called every MEAS_PERIOD ms during immersion phase. It's in charge
-*               of stationarity detection and microSD writing. The write is performed by calling 
-*               the write_SD function every n times measure itself is called, where n is 
-*               the ratio between the period of the writes, WRITE_PERIOD, and the period with
-*               which measure is called, MEAS_PERIOD, that is usually smaller. This works better
-*               if the first is a multiple of the latter. The FLOAT is signalled as stationary
-*               when two depth measurements in a row are equal within an EPSILON of error.
+*               of stationarity detection and EEPROM writing. The write is performed by calling 
+*               the write_EEPROM function every measurement cycle. The FLOAT is signalled as stationary
+*               when two depth measurements in a row are equal within an EPSILON of error, or
+*               when target depth is reached and maintained for the specified time.
 *
 * Argument(s) : targetDepth, time
 *
@@ -307,18 +302,14 @@ void measure (float targetDepth, float time) {
   while(true) {                                       // Waits for the FLOAT to stop
     if (millis() - prec_time_meas > MEAS_PERIOD) {    // Every MEAS_PERIOD ms reads from the sensor and tries to detect if FLOAT
 //                                                       stopped after updating the motor PWM using the PID output. 
-//                                                       It also writes to microSD every WRITE_PERIOD ms
+//                                                       It also writes to EEPROM every measurement cycle
       prec_time_meas = millis();                      // Resets the MEAS_PERIOD timer for next measurement
       
       LED_check_for_blink();                          // Makes the RGB LED blink at set period
 
       sensor.read();                                  // Reads measurements of the Bar02 pressure sensor, updating the sensor object
       f_depth();                                      // Calculates depth value
-      meas_cnt++;                                  
-      if (meas_cnt >= (WRITE_PERIOD / MEAS_PERIOD)) { // Checks if enough measurements occurred since the last write on microSD,
-        write_SD();                                   // before writing again on it
-        meas_cnt = 0;                                 
-      }
+      write_EEPROM();                                 // Writes the current data to EEPROM
 
       if (targetDepth == 0 || targetDepth == MAX_TARGET) {
         if (motor_stopped) {
@@ -352,11 +343,9 @@ void measure (float targetDepth, float time) {
         // ---------------------------
 
         if (PID_res >= 0) {
-          //if (PID_res > 1000) PID_res = 1000;          // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
           digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
           analogWriteFrequency(PID_res);
         } else {
-          //if (-PID_res > 1000) PID_res = -1000;
           digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
           analogWriteFrequency(-PID_res);
         }
@@ -420,8 +409,12 @@ void setup () {
   pinMode(EN, OUTPUT);
   digitalWrite(EN, HIGH);                                              // Disables the motor until needed
 
-  while (!SD.begin()) Serial.println("Failed to initialize SD card!"); // Inits microSD
-  if (SD.exists(FILE_NAME)) SD.remove(FILE_NAME);                      // Clears data file
+  if (!EEPROM.begin(EEPROM_SIZE)) {                                    // Inits EEPROM
+    Serial.println("Failed to initialise EEPROM!");
+    ESP.restart();
+  }
+  eeprom_write_ptr = 0; // Start writing at the beginning
+  eeprom_read_ptr = 0;  // Start reading from the beginning
  
   WiFi.mode(WIFI_STA);                                                 // Sets device as a Wi-Fi Station
 
@@ -498,8 +491,7 @@ void loop () {
 //                                                                                     This check is necessary as the new command can arrive 
 //                                                                                     right after the CONN_CHECK_PERIOD timer triggers. Reset
 //                                                                                     is necessary for the new command detection
-        if (new_data != 0) result = send_message(IDLE_W_DATA_ACK, 5000);            // If there are data to be sent to CS, sends an acknowledgement
-//                                                                                     with that information to the ESPB
+        if (eeprom_write_ptr > eeprom_read_ptr) result = send_message(IDLE_W_DATA_ACK, 5000); // If there is unread data in EEPROM
         else result = send_message(IDLE_ACK, 5000);                                 // Otherwise signals only that is waiting for the next command
 
         if (result) {                                                               // Checks for acknowledgement success
@@ -532,23 +524,19 @@ void loop () {
       break;
     case 1: // Profile commit and measuring
       { 
-        myFile = SD.open(FILE_NAME, FILE_WRITE);                     // Opens file in write mode, or creates it if non existing. 
-//                                                                      File pointer is now at 0
-        if (!myFile) /*Serial.println("idle: error in opening file!")*/;
-        else {
-          uint8_t result;
+        uint8_t result;
 
-          result = send_message(CMD1_ACK, 1000);                     // If file succeeds to open, tries to send an acknowledgement to CS
-          if (result || auto_committed) {                            // If ack arrived or AM committed the profile, starts immersion phase
+        result = send_message(CMD1_ACK, 1000);                     // Tries to send an acknowledgement to CS
+        if (result || auto_committed) {                            // If ack arrived or AM committed the profile, starts immersion phase
             
             if (auto_committed)
               setLED(255, 0, 0, 1000);                               // If AM committed, red blinking LED
             else setLED(0, 0, 255, 1000);                            // Else, blue blinking LED
 
             meas_cnt = 0;
-            time_ref = millis();                                     // Stores time reference for the entire profile. Used in microSD writing
+            time_ref = millis();                                     // Stores time reference for the entire profile. Used in EEPROM writing
             profile_count++;                                         // Increases the global counter of committed profiles
-            file_read_ptr = file_write_ptr;                          // If old profile data is written on microSD, discards it
+            eeprom_read_ptr = eeprom_write_ptr;                      // Ensures only data from this profile is sent next
             analogWriteFrequency(0);                                 // Sets analog PWM generator frequency to 0                                      
             analogWrite(STEP, 127);                                  // Sets the duty cycle of the generated PWM to 50%
             digitalWrite(EN, LOW);                                   // Enables motor
@@ -565,46 +553,39 @@ void loop () {
             analogWrite(STEP, 0);                                    // stops the motor (duty cycle at 0%),
             analogWriteFrequency(1000);                              // resets the PWM generator frequency,
             digitalWrite(EN, HIGH);                                  // and disables the motor
-
-            myFile.println("STOP_DATA");               // Adds a profile-data terminator to the file
-            myFile.flush();                            // Commits the write
-            file_write_ptr = myFile.position();        // Stores file cursor for next writes
-            new_data = file_write_ptr - file_read_ptr; // Updates the new_data variable with the delta in bytes between 
-//                                                        already-read data and the still-to-read one
-            myFile.close();                            // Closes file
           }
-        }
         status = 0;                                    // Returns to idle
       }
       break;
     case 2: // Data sending                                           // The command doesn't need an acknowledgement as 
-      {//                                                                the sended data already works as ack                      
-        myFile = SD.open(FILE_NAME, FILE_READ);                       // Opens file in read mode, or creates it if non existing
-        if (!myFile) /*Serial.println("sending data: error in opening file!")*/;
-        else {
-          uint8_t result = 1;
-          int line_len = 0;
+      {                                                               // the sended data already works as ack                      
+        char line[OUTPUT_LEN];
+        int line_idx = 0;
+        char current_char;
 
-          myFile.seek(file_read_ptr);                                 // Starts to read after the last read byte
-          while (myFile.available()) {                                // Tries to read until it reaches end of file
-            delay(50);                                                // Slowing down sending rate to match CS reading speed 
-//                                                                       (USB buffer is small in ESPB-CS connection)
-            char line[OUTPUT_LEN];
-            
-            line_len = myFile.readBytesUntil('\n', line, OUTPUT_LEN); // Reads from microSD until encounters a new line, while copying
-//                                                                       into char array line. New line character is not copied
-            for(int i=line_len; i<OUTPUT_LEN; i++) line[i]='\0';      // Fills the remaining part of the array with string terminators
+        while (eeprom_read_ptr < eeprom_write_ptr) {
+            current_char = EEPROM.read(eeprom_read_ptr);
+            eeprom_read_ptr++; // Increment read pointer
 
-            send_message(line, 100);                                  // Tries to send read data line to CS: if a sending fails, relative
-//                                                                       data package is lost
-            file_read_ptr = myFile.position();                        // Update last read byte position and hence the new_data variable:
-//                                                                       this effectively marks just read data as old, so that it will not be 
-            new_data = file_write_ptr - file_read_ptr;                // read again at next command call. This is true also if data fails to be
-//                                                                       sended to CS (you want to plot only data relative to last profile)
-          }
-          myFile.close();                                             // Closes file
+            if (current_char == '\n' || line_idx >= OUTPUT_LEN - 1) { // End of line or buffer full
+                line[line_idx] = '\0'; // Null-terminate the string
+
+                if (line_idx > 0) { // Send if line is not empty
+                    delay(50); // Slow down sending rate
+                    send_message(line, 100);
+                }
+                line_idx = 0; // Reset line index for the next line
+            } else {
+                line[line_idx++] = current_char; // Add character to line buffer
+            }
         }
-        status = 0;                                                   // Returns to idle
+        // Ensure the last character read is processed if it wasn't a newline
+        if (line_idx > 0) {
+             line[line_idx] = '\0';
+             delay(50);
+             send_message(line, 100);
+        }
+        status = 0; // Returns to idle
       }
       break;
     case 3: // Motor balance
@@ -625,13 +606,18 @@ void loop () {
         status = 0;
       }
       break;
-    case 4: // File clear
+    case 4: // Clear EEPROM Data
       {
-        if (SD.exists(FILE_NAME)) {         // Checks for the file to exists in microSD file system
-          uint8_t result;
-
-          result = send_message(CMD4_ACK, 1000);
-          if (result) SD.remove(FILE_NAME); // Deletes the file: will be recreate as empty at file opening
+        uint8_t result;
+        result = send_message(CMD4_ACK, 1000);
+        if (result) {
+          for (int i = 0; i < EEPROM_SIZE; i++) {
+            EEPROM.write(i, 0xFF); // Write 0xFF (erased state) to each byte
+          }
+          if (EEPROM.commit()) {
+              eeprom_write_ptr = 0; // Reset write pointer
+              eeprom_read_ptr = 0;  // Reset read pointer
+          }
         }
         status = 0;
       }
@@ -702,7 +688,7 @@ void loop () {
         status = 0; // Returns to idle
       }
       break;
-    //case 9: // New command routine
+//case 9: // New command routine
     //  {
     //    uint8_t result;
     //
