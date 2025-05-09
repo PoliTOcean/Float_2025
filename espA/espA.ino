@@ -3,7 +3,7 @@
 *                            Code of the ESP32 on the FLOAT board (ESPA)
 *
 * Filename: EspA.ino
-* Version: 8.2.0
+* Version: 9.0.0
 * Developers: Fachechi Gino Marco, Gullotta Salvatore
 * Company: Team PoliTOcean @ Politecnico di Torino
 * Arduino board package: esp32 by Espressif Systems, v2.0.17
@@ -206,6 +206,7 @@ uint8_t send_message (char * message_str, uint16_t max_conn_time) {
     send_result = -1;                                                    // send_result flat is cleared
     esp_now_send(broadcastAddress, (uint8_t *) &output, sizeof(output)); // Tries to send the message over MAC layer
     while (send_result == -1) {                                          // Waits for OnDataSent callback to set send_result flag
+      check_battery();
       LED_check_for_blink();
     }
     if(send_result) return 1;                                            // If sending succeeds, function returns 1
@@ -388,8 +389,8 @@ void setLED (uint8_t R, uint8_t G, uint8_t B, uint16_t period) {
 } 
 
 void toggleLED () {
-  if (led_state) LED_off;
-  else LED_on;
+  if (led_state) LED_off();
+  else LED_on();
 }
 
 void LED_on () {
@@ -412,6 +413,19 @@ void LED_check_for_blink () {
     else toggleLED();  
     blink_ref = millis();
   } 
+}
+
+void check_battery () {
+  INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
+  output.charge = INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
+
+  // Serial.print("charge ");
+  // Serial.print(output.charge);
+  // Serial.println(" mV");
+
+  if (output.charge < BATT_THRESH)                                            // If battery charge is low, red blinking LED 
+    setLED(255, 0, 0, 350);  
+  else setLED(0, 255, 0, 750);                                                // Else, green blinking LED    
 }
 
 /** SETUP **/
@@ -497,18 +511,9 @@ void loop () {
       {
         uint8_t result;
 
-        auto_committed = 0;  
+        auto_committed = 0;       
 
-        INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
-        output.charge = INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
-
-        // Serial.print("charge ");
-        // Serial.print(output.charge);
-        // Serial.println(" mV");
-
-        if (output.charge < BATT_THRESH)                                            // If battery charge is low, red blinking LED 
-          setLED(255, 0, 0, 350);  
-        else setLED(0, 255, 0, 750);                                                // Else, green blinking LED                                                   
+        check_battery();                                        
 
         if (!idle) input.command = 0;                                               // If not already waiting for a command (1st idle loop), resets the command.
 //                                                                                     This check is necessary as the new command can arrive 
@@ -525,6 +530,7 @@ void loop () {
 
           while ((millis()-prec_time < CONN_CHECK_PERIOD) && input.command == 0) {  // Waits for a new command to arrive or for CONN_CHECK_PERIOD 
 //                                                                                     milliseconds to elapse. In the meantime, the RGB LED is made blink
+            check_battery();
             LED_check_for_blink();
           }
 
@@ -541,7 +547,7 @@ void loop () {
         if (status != 0) {
           idle = 0;                                                                 // If a command has been committed, signals to other logics
 //                                                                                     that the FLOAT exited idle phase. 
-          setLED(255, 127, 0, 0);                                                   // Orange fixed LED for the command execution time (can be overwritten)
+          setLED(255, 63, 0, 0);                                                   // Orange fixed LED for the command execution time (can be overwritten)
         }
       }//                                                                              Otherwise, the case 0 repeats remaining in idle                                      
       break;
@@ -553,7 +559,7 @@ void loop () {
         if (result || auto_committed) {                             // If ack arrived or AM committed the profile, starts immersion phase
             
             if (auto_committed)
-              setLED(255, 255, 0, 1000);                             // If AM committed, yellow blinking LED
+              setLED(255, 127, 0, 1000);                             // If AM committed, yellow blinking LED
             else setLED(0, 0, 255, 1000);                            // Else, blue blinking LED
 
             meas_cnt = 0;
@@ -606,7 +612,7 @@ void loop () {
           }
         }
 
-        strcpy(line, "STOP_DATA/n");
+        strcpy(line, "STOP_DATA/0");
         send_message(line, 100); // Tries to signal the end of the last profile measurements 
 
         status = 0; // Returns to idle

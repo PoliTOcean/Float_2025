@@ -3,7 +3,7 @@
 *                            Code of the ESP32 attached to CS (ESPB)
 *
 * Filename: EspB.ino
-* Version: 8.1.1
+* Version: 9.0.0
 * Developers: Fachechi Gino Marco, Gullotta Salvatore
 * Company: Team PoliTOcean @ Politecnico di Torino
 * Arduino board package: esp32 by Espressif Systems, v2.0.17
