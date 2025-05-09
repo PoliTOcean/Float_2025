@@ -33,7 +33,7 @@
   #define ESPB_INO
 #endif
 
-#define INPUT_LEN   250 // Length of the input on the MAC layer 
+#define INPUT_LEN   250-sizeof(uint16_t) // Length of the output on the MAC layer, minus the size of the charge field 
 #define BUFFER_SIZE 20  // Chosen size in bytes of the Serial software buffer: 
 //                         longer command and status strings are strongly discouraged
 //                         and the GUI running on the CS should be aware of this limit
@@ -44,13 +44,13 @@
   Necessary for esp_now library compliance.
 **/
 typedef struct input_message {
+  uint16_t charge;
   char message[INPUT_LEN];
-  float charge;
 } input_message;
 
 typedef struct output_message {
-  uint8_t command = 0;
   float params[3];
+  uint8_t command = 0;
 } output_message;
 
 output_message output;
@@ -71,7 +71,7 @@ uint8_t message_rdy      = 0;     // Flag for signaling that a new message arriv
 int8_t  send_result      = -1;    // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t  status           = 0;     // State variable that is updated according to arriving messages and is used to feedback the CS when requested
 char    serialInput[BUFFER_SIZE]; // Serial software buffer used to empty the hardware one as soon as a new command arrives
-float   battery_charge   = 0;     // FLOAT battery charge, updated at last acknowledgement
+uint16_t battery_charge  = 0;     // FLOAT battery charge, updated at last acknowledgement
 
 /** PROGRAM LOCAL FUNCTIONS **/
 /*
@@ -236,9 +236,8 @@ void loop() {
     else status = 2;                                                                         // If it's not in idle, the FLOAT is executing a command
     
     Serial.println(input.message);                                                           // Sends incoming message on Serial channel 
-//                                                                                              for real time feedback to the CS
-    Serial.println(input.charge);
-    battery_charge = input.charge;
+//                                                                                              for real time feedback to the CS                                                          
+    battery_charge = input.charge;                                                           // Update charge value 
 
     if (strcmp(input.message, "SWITCH_AM_RECVD") == 0) auto_mode_active = !auto_mode_active; // If AM toggle command succeeded,
 //                                                                                              toggles flag for feedback purposes
@@ -286,6 +285,7 @@ void loop() {
       if (result) Serial.print("CONN_OK");
       else        Serial.print("CONN_LOST");
       Serial.print(" | ");
+      Serial.println("BATTERY: ");
       Serial.println(battery_charge);
     }
 

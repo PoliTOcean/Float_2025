@@ -48,8 +48,8 @@
   #define ESPA_INO
 #endif
 
-#define OUTPUT_LEN      200               // Length of the output on the MAC layer 
-#define EEPROM_SIZE     4096              // EEPROM allocation size in bytes
+#define OUTPUT_LEN      250-sizeof(uint16_t) // Length of the output on the MAC layer, minus the size of the charge field 
+#define EEPROM_SIZE     4096                 // EEPROM allocation size in bytes
 // List of messages for the ESPA acknoledgements: CS has to be aware of these 
 #define IDLE_ACK        "FLOAT_IDLE"        
 #define IDLE_W_DATA_ACK "FLOAT_IDLE_W_DATA"
@@ -66,7 +66,7 @@
   Necessary for esp_now library compliance.
 **/
 typedef struct output_message {
-  float charge;
+  uint16_t charge;
   char message[OUTPUT_LEN];
 } output_message;
 
@@ -101,7 +101,7 @@ const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
 const uint16_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
-const uint16_t BATT_THRESH       = 7000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
+const uint16_t BATT_THRESH       = 9000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 const uint32_t MAX_STEPS         = 2000;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
@@ -205,7 +205,9 @@ uint8_t send_message (char * message_str, uint16_t max_conn_time) {
   while (true) {                                                         // [* sending sequence start]
     send_result = -1;                                                    // send_result flat is cleared
     esp_now_send(broadcastAddress, (uint8_t *) &output, sizeof(output)); // Tries to send the message over MAC layer
-    while (send_result == -1);                                           // Waits for OnDataSent callback to set send_result flag
+    while (send_result == -1) {                                          // Waits for OnDataSent callback to set send_result flag
+      LED_check_for_blink();
+    }
     if(send_result) return 1;                                            // If sending succeeds, function returns 1
     else if (millis() - prec_time > max_conn_time) return 0;             // If sending failed and max_conn_time milliseconds elapsed from 
   }//                                                                       prec_time set, the function returns 0. Otherwise it starts again 
@@ -255,9 +257,13 @@ void write_EEPROM () {
   // Format the data string
   snprintf(data_buffer, OUTPUT_LEN,
            "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%llu\"}\n",
+            // pressure as measured from the bottom of the FLOAT: the multiplication is for m to Pa conversion in water
            sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH * 10000),
+           // depth value as calculated from f_depth function, in m
            depth,
+           // temperature in Celsius
            sensor.temperature(),
+            // milliseconds elapsed from the profile start
            (millis() - time_ref));
 
   int data_len = strlen(data_buffer);
@@ -281,9 +287,10 @@ void write_EEPROM () {
 *
 * Description : The function is called every MEAS_PERIOD ms during immersion phase. It's in charge
 *               of stationarity detection and EEPROM writing. The write is performed by calling 
-*               the write_EEPROM function every measurement cycle. The FLOAT is signalled as stationary
-*               when two depth measurements in a row are equal within an EPSILON of error, or
-*               when target depth is reached and maintained for the specified time.
+*               the write_EEPROM function every WRITE_PERIOD/MEAS_PERIOD measurement cycles. The FLOAT 
+*               is signalled as stationary when two depth measurements in a row are equal within 
+*               an EPSILON of error, or when target depth is reached and maintained for 
+*               the specified time.
 *
 * Argument(s) : targetDepth, time
 *
@@ -299,17 +306,24 @@ void measure (float targetDepth, float time) {
   float rev_time = 0;   
   depth_integral = 0;
 
+  digitalWrite(EN, LOW);                              // Enable motor if disabled
+
   while(true) {                                       // Waits for the FLOAT to stop
+
+    LED_check_for_blink();                            // Makes the RGB LED blink at set period
+
     if (millis() - prec_time_meas > MEAS_PERIOD) {    // Every MEAS_PERIOD ms reads from the sensor and tries to detect if FLOAT
 //                                                       stopped after updating the motor PWM using the PID output. 
 //                                                       It also writes to EEPROM every measurement cycle
       prec_time_meas = millis();                      // Resets the MEAS_PERIOD timer for next measurement
-      
-      LED_check_for_blink();                          // Makes the RGB LED blink at set period
 
       sensor.read();                                  // Reads measurements of the Bar02 pressure sensor, updating the sensor object
       f_depth();                                      // Calculates depth value
-      write_EEPROM();                                 // Writes the current data to EEPROM
+      meas_cnt++;                                  
+      if (meas_cnt >= (WRITE_PERIOD / MEAS_PERIOD)) { // Checks if enough measurements occurred since the last write on microSD,
+        write_EEPROM();                               // before writing again on it
+        meas_cnt = 0;                                 
+      }
 
       if (targetDepth == 0 || targetDepth == MAX_TARGET) {
         if (motor_stopped) {
@@ -328,6 +342,7 @@ void measure (float targetDepth, float time) {
         } else {
           if (millis() - start_time > rev_time) {
             analogWriteFrequency(0);
+            digitalWrite(EN, HIGH); // Since not used, disable motor to save power
             if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
               elapsed_stat++;
               if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
@@ -343,9 +358,11 @@ void measure (float targetDepth, float time) {
         // ---------------------------
 
         if (PID_res >= 0) {
+          //if (PID_res > 1000) PID_res = 1000;        // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
           digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
           analogWriteFrequency(PID_res);
         } else {
+          //if (-PID_res > 1000) PID_res = -1000;
           digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
           analogWriteFrequency(-PID_res);
         }
@@ -483,12 +500,13 @@ void loop () {
         auto_committed = 0;  
 
         INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
-        output.charge = (float) INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
-        Serial.print("charge ");
-        Serial.print(charge);
-        Serial.println(" mV");
+        output.charge = INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
 
-        if (charge < BATT_THRESH)                                                   // If battery charge is low, red blinking LED 
+        // Serial.print("charge ");
+        // Serial.print(output.charge);
+        // Serial.println(" mV");
+
+        if (output.charge < BATT_THRESH)                                            // If battery charge is low, red blinking LED 
           setLED(255, 0, 0, 350);  
         else setLED(0, 255, 0, 750);                                                // Else, green blinking LED                                                   
 
@@ -531,18 +549,18 @@ void loop () {
       { 
         uint8_t result;
 
-        result = send_message(CMD1_ACK, 1000);                     // Tries to send an acknowledgement to CS
-        if (result || auto_committed) {                            // If ack arrived or AM committed the profile, starts immersion phase
+        result = send_message(CMD1_ACK, 1000);                      // Tries to send an acknowledgement to CS
+        if (result || auto_committed) {                             // If ack arrived or AM committed the profile, starts immersion phase
             
             if (auto_committed)
-              setLED(255, 0, 0, 1000);                               // If AM committed, red blinking LED
+              setLED(255, 255, 0, 1000);                             // If AM committed, yellow blinking LED
             else setLED(0, 0, 255, 1000);                            // Else, blue blinking LED
 
             meas_cnt = 0;
             time_ref = millis();                                     // Stores time reference for the entire profile. Used in EEPROM writing
             profile_count++;                                         // Increases the global counter of committed profiles
             eeprom_read_ptr = eeprom_write_ptr;                      // Ensures only data from this profile is sent next
-            analogWriteFrequency(0);                                 // Sets analog PWM generator frequency to 0                                      
+            analogWriteFrequency(1);                                 // Sets analog PWM generator frequency to the minimum allowed                                      
             analogWrite(STEP, 127);                                  // Sets the duty cycle of the generated PWM to 50%
             digitalWrite(EN, LOW);                                   // Enables motor
 
@@ -559,7 +577,7 @@ void loop () {
             analogWriteFrequency(1000);                              // resets the PWM generator frequency,
             digitalWrite(EN, HIGH);                                  // and disables the motor
           }
-        status = 0;                                    // Returns to idle
+        status = 0;                                                  // Returns to idle
       }
       break;
     case 2: // Data sending                                           // The command doesn't need an acknowledgement as 
@@ -569,27 +587,28 @@ void loop () {
         char current_char;
 
         while (eeprom_read_ptr < eeprom_write_ptr) {
-            current_char = EEPROM.read(eeprom_read_ptr);
-            eeprom_read_ptr++; // Increment read pointer
+          current_char = EEPROM.read(eeprom_read_ptr);
+          eeprom_read_ptr++; // Increment read pointer
 
-            if (current_char == '\n' || line_idx >= OUTPUT_LEN - 1) { // End of line or buffer full
-                line[line_idx] = '\0'; // Null-terminate the string
-
-                if (line_idx > 0) { // Send if line is not empty
-                    delay(50); // Slow down sending rate
-                    send_message(line, 100);
-                }
-                line_idx = 0; // Reset line index for the next line
+          if (current_char == '\n' || line_idx == OUTPUT_LEN-1) { // End of line or buffer full
+            if (current_char != '\n') {
+              line[line_idx] = current_char; // Add character to last position of the buffer
             } else {
-                line[line_idx++] = current_char; // Add character to line buffer
+              for(int i=line_idx; i<OUTPUT_LEN; i++) line[line_idx] = '\0'; // Padding of null-terminators
             }
+
+            delay(50); // Slow down sending rate
+            send_message(line, 100); // Tries to send read data line to CS: if a sending fails, relative data package is lost
+
+            line_idx = 0; // Reset line index for the next line
+          } else {
+            line[line_idx++] = current_char; // Add character to line buffer
+          }
         }
-        // Ensure the last character read is processed if it wasn't a newline
-        if (line_idx > 0) {
-             line[line_idx] = '\0';
-             delay(50);
-             send_message(line, 100);
-        }
+
+        strcpy(line, "STOP_DATA/n");
+        send_message(line, 100); // Tries to signal the end of the last profile measurements 
+
         status = 0; // Returns to idle
       }
       break;
@@ -693,7 +712,7 @@ void loop () {
         status = 0; // Returns to idle
       }
       break;
-//case 9: // New command routine
+    //case 9: // New command routine
     //  {
     //    uint8_t result;
     //
