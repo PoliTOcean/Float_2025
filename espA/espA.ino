@@ -48,7 +48,7 @@
   #define ESPA_INO
 #endif
 
-#define OUTPUT_LEN      250               // Length of the output on the MAC layer 
+#define OUTPUT_LEN      200               // Length of the output on the MAC layer 
 #define EEPROM_SIZE     4096              // EEPROM allocation size in bytes
 // List of messages for the ESPA acknoledgements: CS has to be aware of these 
 #define IDLE_ACK        "FLOAT_IDLE"        
@@ -66,13 +66,13 @@
   Necessary for esp_now library compliance.
 **/
 typedef struct output_message {
-  char message[OUTPUT_LEN];
   float charge;
+  char message[OUTPUT_LEN];
 } output_message;
 
 typedef struct input_message {
-  uint8_t command = 0;
   float params[3];
+  uint8_t command = 0;
 } input_message;
 
 output_message output;
@@ -84,13 +84,13 @@ MS5837              sensor;   // Object for Bar02 interfacing
 esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we want to connect with
 AsyncWebServer      server(80);
 // Esp_now constant for peer MAC address value. Replace with the MAC address of your receiver (ESPB) 
-uint8_t             broadcastAddress[] = {0xE4, 0x65, 0xB8, 0xA7E, 0x27, 0xAC};
+uint8_t             broadcastAddress[] = {0xE4, 0x65, 0xB8, 0xA7, 0x27, 0xAC};
 
 /** PROGRAM GLOBAL CONSTANTS **/
 const char*    SSID              = "Mi10";     // Name of the net the ESPA has to connect to for OTA firmware upload
 const char*    PASSWORD          = "ciao1234"; // Password for the net the ESPA has to connect to for OTA firmware upload
-const uint8_t  DIR               = 12;         // Pin for motor direction driving
-const uint8_t  STEP              = 14;         // Pin for motor tension driving (used as PWM)
+const uint8_t  DIR               = 25;         // Pin for motor direction driving
+const uint8_t  STEP              = 26;         // Pin for motor tension driving (used as PWM)
 const uint8_t  EN                = 27;         // Active-low pin for motor enabling
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles to complete in order to gain maximum points
 const uint8_t  R_PIN             = 19;         // Pin of the RED LED
@@ -101,6 +101,7 @@ const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
 const uint16_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
+const uint16_t BATT_THRESH       = 7000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 const uint32_t MAX_STEPS         = 2000;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
@@ -108,7 +109,6 @@ const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT 
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
 const float    TARGET_DEPTH      = 2.5;        // Target depth to be met and mantained when sinking, expressed in m
 const float    STAT_TIME         = 50;         // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
-const float    BATT_THRESH       = 7000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 
 /** PROGRAM GLOBAL VARIABLES **/
 uint8_t  meas_cnt         = 0;  // Number of measurements occurred since the last write to EEPROM, must be reset before each profile
@@ -435,29 +435,31 @@ void setup () {
     return;
   }
 
+  Wire.begin();
+
   for (uint8_t j=0; j<3; j++) {
-    uint8_t devicesFound = INA.begin(12, 100000);                      // Inits INA220, with maximum expected tension and initial shunt resistance
-    Serial.println("Found device: ");
+    uint8_t devicesFound = INA.begin(12, 5000);                      // Inits INA220, with maximum expected tension and initial shunt resistance
+    Serial.print("Found device: ");
     Serial.println(INA.getDeviceName(devicesFound - 1));
     for (uint8_t i=0; i < devicesFound; i++) {
-      if (strcmp(INA.getDeviceName(i), "INA220") == 0) {
+      if (strcmp(INA.getDeviceName(i), "INA219") == 0) {
         deviceNumber = i;
         INA.reset(deviceNumber);                                       // Reset device to default settings
+        
+        Serial.print(F("Found INA at device number "));
+        Serial.println(deviceNumber);
+        Serial.println();
+        INA.setAveraging(64, deviceNumber);                            // Average each reading 64 times
+        INA.setBusConversion(8244, deviceNumber);                      // Maximum conversion time 8.244ms
+        INA.setMode(INA_MODE_CONTINUOUS_BUS, deviceNumber);            // Bus/shunt measured continuously
         break;
       }
     }
     if (deviceNumber == UINT8_MAX) {
       Serial.print(F("No INA found. Waiting 2s and retrying...\n"));
       delay(2000);
-    }
+    } else break;
   }
-
-  Serial.print(F("Found INA at device number "));
-  Serial.println(deviceNumber);
-  Serial.println();
-  INA.setAveraging(64, deviceNumber);                                  // Average each reading 64 times
-  INA.setBusConversion(8244, deviceNumber);                            // Maximum conversion time 8.244ms
-  INA.setMode(INA_MODE_CONTINUOUS_BUS, deviceNumber);                  // Bus/shunt measured continuously
 
   sensor.setModel(1);                                                  // Inits Bar02 by specifing model,
   while (!sensor.init()) {
@@ -482,9 +484,12 @@ void loop () {
 
         INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
         output.charge = (float) INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
+        Serial.print("charge ");
+        Serial.print(charge);
+        Serial.println(" mV");
 
-        if (output.charge < BATT_THRESH)                                            // If battery charge is low, yellow blinking LED 
-          setLED(255, 255, 0, 350);  
+        if (charge < BATT_THRESH)                                                   // If battery charge is low, red blinking LED 
+          setLED(255, 0, 0, 350);  
         else setLED(0, 255, 0, 750);                                                // Else, green blinking LED                                                   
 
         if (!idle) input.command = 0;                                               // If not already waiting for a command (1st idle loop), resets the command.
