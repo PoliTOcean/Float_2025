@@ -84,7 +84,7 @@ MS5837              sensor;   // Object for Bar02 interfacing
 esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we want to connect with
 AsyncWebServer      server(80);
 // Esp_now constant for peer MAC address value. Replace with the MAC address of your receiver (ESPB) 
-uint8_t             broadcastAddress[] = {0xE4, 0x65, 0xB8, 0xA7, 0x27, 0xAC};
+uint8_t             broadcastAddress[] = {0xE4, 0x65, 0xB8, 0x7E, 0x27, 0xAC};
 
 /** PROGRAM GLOBAL CONSTANTS **/
 const char*    SSID              = "Mi10";     // Name of the net the ESPA has to connect to for OTA firmware upload
@@ -99,10 +99,10 @@ const uint8_t  B_PIN             = 5;          // Pin of the BLUE LED
 const uint16_t MEAS_PERIOD       = 100;        // Period between two consecutive measurements during immersion phase, expressed in ms
 const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive writes to EEPROM during immersion phase, expressed in ms
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
-const uint16_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
 const uint16_t BATT_THRESH       = 9000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 const uint32_t MAX_STEPS         = 2000;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
+const uint32_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
 const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
@@ -124,12 +124,12 @@ int8_t   status           = 0;  // Status of the FLOAT, drives the main switch a
 uint16_t eeprom_read_ptr  = 0;  // Pointer to the location of the last read byte in EEPROM
 uint16_t eeprom_write_ptr = 0;  // Pointer to the location of the next available byte in EEPROM
 uint16_t led_blink        = 0;  // Blinking period for the RGB LED, expressed in ms
-uint32_t current_step     = 0;  // Number of steps done by the motor in the same direction wrt its initial position
+uint16_t current_step     = 0;  // Number of steps done by the motor in the same direction wrt its initial position
 uint64_t blink_ref        = 0;  // Time reference for the blinking period of the RGB LED
 uint64_t time_ref         = 0;  // Time reference for writing on the EEPROM during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
 float    depth            = 0;  // Depth measured during immersion phase, written to EEPROM and used to sense FLOAT stationarity, expressed in Pa
-float    Kp               = 1;  // PID parameters, modifiable with a specific command
+float    Kp               = 300;  // PID parameters, modifiable with a specific command
 float    Kd               = 0;
 float    Ki               = 0;  
 float    depth_integral   = 0;  // Integral of the depth values measured in a profile. Used for PID calculations.
@@ -200,19 +200,23 @@ void OnDataSent (const uint8_t * mac, esp_now_send_status_t status) {
 *********************************************************************************************************
 */
 uint8_t send_message (char * message_str, uint16_t max_conn_time) {
-  memcpy(&output.message, message_str, sizeof(output.message));          // Message is copied in the output data struct
   uint64_t prec_time = millis();                                         // A time reference (ms elapsed from startup) is stored in prec_time
+  char packet[250];
+  memcpy(packet, (uint8_t *) &output.charge, sizeof(output.charge));
+  memcpy(packet+sizeof(output.charge), message_str, OUTPUT_LEN);
   while (true) {                                                         // [* sending sequence start]
     send_result = -1;                                                    // send_result flat is cleared
-    esp_now_send(broadcastAddress, (uint8_t *) &output, sizeof(output)); // Tries to send the message over MAC layer
+    esp_now_send(broadcastAddress, (uint8_t *) &packet, sizeof(packet));              // Tries to send the message over MAC layer
     while (send_result == -1) {                                          // Waits for OnDataSent callback to set send_result flag
-      check_battery();
       LED_check_for_blink();
     }
     if(send_result) return 1;                                            // If sending succeeds, function returns 1
-    else if (millis() - prec_time > max_conn_time) return 0;             // If sending failed and max_conn_time milliseconds elapsed from 
-  }//                                                                       prec_time set, the function returns 0. Otherwise it starts again 
-//                                                                          the sending sequence from [* sending sequence start]
+    else {
+      if (output.charge >= BATT_THRESH) setLED(255, 0, 0, 750);
+      if (millis() - prec_time > max_conn_time) return 0;                // If sending failed and max_conn_time milliseconds elapsed from 
+    }//                                                                     prec_time set, the function returns 0. Otherwise it starts again
+  }//                                                                       the sending sequence from [* sending sequence start]
+//                                                                          
 } 
 
 /*
@@ -301,13 +305,16 @@ void write_EEPROM () {
 void measure (float targetDepth, float time) {
   uint8_t elapsed_stat = 0;
   uint8_t motor_stopped = 1;
+  int32_t calc_step = 0;
+  int32_t PID_res = 0;
   uint64_t prec_time_meas = millis();                 // Stores time reference for measurement period timer
   uint64_t start_time = millis();
   float prevDepth = 0;
   float rev_time = 0;   
-  depth_integral = 0;
+  float velocity = 0;
+  float error = 0;
 
-  digitalWrite(EN, LOW);                              // Enable motor if disabled
+  depth_integral = 0;
 
   while(true) {                                       // Waits for the FLOAT to stop
 
@@ -339,10 +346,10 @@ void measure (float targetDepth, float time) {
             current_step = 0;
           }
           analogWriteFrequency(REV_FREQ);
+          digitalWrite(EN, LOW);                              // Enable motor if disabled
           motor_stopped = 0;
         } else {
           if (millis() - start_time > rev_time) {
-            analogWriteFrequency(0);
             digitalWrite(EN, HIGH); // Since not used, disable motor to save power
             if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
               elapsed_stat++;
@@ -352,22 +359,41 @@ void measure (float targetDepth, float time) {
         }
       } else {
         // PID output calculations ---
-        float error = targetDepth - depth;
-        float velocity = (prevDepth - depth) / (MEAS_PERIOD / 1000);
-        depth_integral += error * (MEAS_PERIOD / 1000); 
-        float PID_res = error * Kp + velocity * Kd + depth_integral * Ki;
+        error = targetDepth - depth;
+        velocity = (prevDepth - depth) / ((float) MEAS_PERIOD / 1000);
+        depth_integral += error * ((float) MEAS_PERIOD / 1000); 
+        PID_res = error * Kp + velocity * Kd + depth_integral * Ki;
         // ---------------------------
 
         if (PID_res >= 0) {
-          //if (PID_res > 1000) PID_res = 1000;        // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
+          if (PID_res > REV_FREQ) PID_res = REV_FREQ;  // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
+          if (PID_res < 20) {
+            digitalWrite(EN, HIGH);
+            PID_res = 0;
+          } 
+          else {
+            analogWriteFrequency(PID_res);
+            digitalWrite(EN, LOW);
+          }
           digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
-          analogWriteFrequency(PID_res);
         } else {
-          //if (-PID_res > 1000) PID_res = -1000;
+          if (-PID_res > REV_FREQ) PID_res = -REV_FREQ;
+          if (-PID_res < 20) {
+            digitalWrite(EN, HIGH);
+            PID_res = 0;
+          } else {
+            analogWriteFrequency(-PID_res);
+            digitalWrite(EN, LOW);
+          }
           digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
-          analogWriteFrequency(-PID_res);
         }
-        current_step += (uint32_t) (PID_res * (MEAS_PERIOD/ (float) 1000));
+
+        calc_step = current_step + PID_res * ((float) MEAS_PERIOD / 1000);
+        if (calc_step >= (int32_t) MAX_STEPS) current_step = MAX_STEPS;
+        else if (calc_step <= 0) current_step = 0;
+        else current_step = calc_step;
+        
+
 
         if (targetDepth < depth + MAX_ERROR && targetDepth > depth - MAX_ERROR) {
           elapsed_stat++;
@@ -385,7 +411,9 @@ void measure (float targetDepth, float time) {
 
 void setLED (uint8_t R, uint8_t G, uint8_t B, uint16_t period) {
   r_v = R; g_v = G; b_v = B; led_blink = period;
-  LED_on();
+  if (period == 0) {
+    LED_on();
+  }
 } 
 
 void toggleLED () {
@@ -423,8 +451,8 @@ void check_battery () {
   // Serial.print(output.charge);
   // Serial.println(" mV");
 
-  if (output.charge < BATT_THRESH)                                            // If battery charge is low, red blinking LED 
-    setLED(255, 0, 0, 350);  
+  if (output.charge < BATT_THRESH)                                            // If battery charge is low, red fixed LED 
+    setLED(255, 0, 0, 0);  
   else setLED(0, 255, 0, 750);                                                // Else, green blinking LED    
 }
 
@@ -453,6 +481,10 @@ void setup () {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
+
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  Serial.printf("MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
   esp_now_register_recv_cb(OnDataRecv);                                // Registers esp_now arrival callback
   esp_now_register_send_cb(OnDataSent);                                // Registers esp_now sending callback
@@ -493,15 +525,22 @@ void setup () {
   }
 
   sensor.setModel(1);                                                  // Inits Bar02 by specifing model,
+  uint64_t prec_time = 0;
   while (!sensor.init()) {
-    Serial.println("Init failed!");
-    Serial.println("Are SDA/SCL connected correctly?");
-    Serial.println("Blue Robotics Bar02: White=SDA, Green=SCL");
-    delay(5000);
+    if (millis() - prec_time > 5000) {
+      prec_time = millis();
+      Serial.println("Init failed!");
+      Serial.println("Are SDA/SCL connected correctly?");
+      Serial.println("Blue Robotics Bar02: White=SDA, Green=SCL");
+    }
+    setLED(255, 0, 0, 400);
+    LED_check_for_blink();
   }
   sensor.setFluidDensity(997);                                         // and operative density in Kg/m^3 (freshwater, 1029 for seawater)
   sensor.read();
   atm_pressure = sensor.pressure(MS5837::Pa);                          // Stores pressure value at water level for depth calculation, in Pa
+
+  analogWrite(STEP, 127);                                              // Sets the duty cycle of the motor PWM to 50%
 }
 
 /** MAIN SWITCH **/
@@ -530,7 +569,6 @@ void loop () {
 
           while ((millis()-prec_time < CONN_CHECK_PERIOD) && input.command == 0) {  // Waits for a new command to arrive or for CONN_CHECK_PERIOD 
 //                                                                                     milliseconds to elapse. In the meantime, the RGB LED is made blink
-            check_battery();
             LED_check_for_blink();
           }
 
@@ -547,7 +585,7 @@ void loop () {
         if (status != 0) {
           idle = 0;                                                                 // If a command has been committed, signals to other logics
 //                                                                                     that the FLOAT exited idle phase. 
-          setLED(255, 63, 0, 0);                                                   // Orange fixed LED for the command execution time (can be overwritten)
+          setLED(255, 63, 0, 0);                                                    // Orange fixed LED for the command execution time (can be overwritten)
         }
       }//                                                                              Otherwise, the case 0 repeats remaining in idle                                      
       break;
@@ -565,10 +603,7 @@ void loop () {
             meas_cnt = 0;
             time_ref = millis();                                     // Stores time reference for the entire profile. Used in EEPROM writing
             profile_count++;                                         // Increases the global counter of committed profiles
-            eeprom_read_ptr = eeprom_write_ptr;                      // Ensures only data from this profile is sent next
-            analogWriteFrequency(1);                                 // Sets analog PWM generator frequency to the minimum allowed                                      
-            analogWrite(STEP, 127);                                  // Sets the duty cycle of the generated PWM to 50%
-            digitalWrite(EN, LOW);                                   // Enables motor
+            eeprom_read_ptr = eeprom_write_ptr;                      // Ensures only data from this profile is sent next                                      
 
             for (int i=0; i<3; i++) {                                // Logic repeats three times: two for descending phase and the last for ascending phase
               switch (i) {
@@ -578,10 +613,8 @@ void loop () {
                 default: break;
               }
             }
-
-            analogWrite(STEP, 0);                                    // stops the motor (duty cycle at 0%),
-            analogWriteFrequency(1000);                              // resets the PWM generator frequency,
-            digitalWrite(EN, HIGH);                                  // and disables the motor
+            
+            digitalWrite(EN, HIGH);                                  // Disables the motor
           }
         status = 0;                                                  // Returns to idle
       }

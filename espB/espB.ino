@@ -59,7 +59,7 @@ input_message  input;
 /** LIBRARY VARIABLES **/
 esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we want to connect with
 // Esp_now constant for peer MAC address value. Replace with the MAC address of your receiver (ESPA) 
-uint8_t broadcastAddress[] = {0x24, 0xDC, 0xC3, 0xA0, 0x3B, 0x38};
+uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2B, 0xA8, 0x00};
 
 /** PROGRAM GLOBAL CONSTANTS **/
 const uint16_t MAX_CONN_TIME = 100; // Time in ms that has to elapse before send_message function stops to try a sending
@@ -68,6 +68,7 @@ const uint16_t MAX_CONN_TIME = 100; // Time in ms that has to elapse before send
 uint8_t auto_mode_active = 0;     // 1 if AM is active, 0 otherwise
 uint8_t serial_rdy       = 0;     // Flag for signaling that the Serial software buffer serialInput is full and ready to be consumed
 uint8_t message_rdy      = 0;     // Flag for signaling that a new message arrived on the MAC layer and is ready to be read 
+uint8_t remaining_params = 0;     // Downcounter for sended parameters after the PARAMS command has been received
 int8_t  send_result      = -1;    // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t  status           = 0;     // State variable that is updated according to arriving messages and is used to feedback the CS when requested
 char    serialInput[BUFFER_SIZE]; // Serial software buffer used to empty the hardware one as soon as a new command arrives
@@ -96,7 +97,8 @@ void OnDataRecv (const uint8_t * mac, const uint8_t * incomingData, int len) {
 
   if (!message_rdy) {
     message_rdy = 1;
-    memcpy(&input, incomingData, sizeof(input));
+    memcpy(&input.charge, incomingData, sizeof(input.charge));
+    memcpy(&input.message, incomingData+sizeof(input.charge), sizeof(input.message));
   }
 
 }
@@ -187,17 +189,9 @@ void serial_handler() {
     }
     for(int i=buffer_index; i<BUFFER_SIZE; i++) serialInput[i] = '\0'; // Fill the rest of the array with string terminators
 
-    if (strcmp(serialInput, "PARAMS") == 0) {
-      for (int i=0; i<3; i++) {
-        buffer_index = 0;                                        
-        c = Serial.read();
-        while (c != '\n' && Serial.available()) {                  
-          serialInput[buffer_index++] = c;                                
-          c = Serial.read();
-        }
-        memcpy(&output.params[i], serialInput, sizeof(serialInput));
-      }
-      memcpy(serialInput, "PARAMS", sizeof("PARAMS"));
+    if (strcmp(serialInput, "PARAMS") == 0) remaining_params = 3;
+    if (remaining_params <= 3 && remaining_params > 0) {
+      memcpy(&output.params[3 - remaining_params--], (float *) &serialInput, sizeof(float));
     }
   }
 }
@@ -214,6 +208,8 @@ void setup() {
     return;
   }
 
+  Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
+  
   esp_now_register_recv_cb(OnDataRecv);                                // Registers esp_now arrival callback
   esp_now_register_send_cb(OnDataSent);                                // Registers esp_now sending callback
   
@@ -257,8 +253,9 @@ void loop() {
     else if (strcmp(serialInput, "SWITCH_AUTO_MODE" ) == 0) send_command(5, MAX_CONN_TIME);
     else if (strcmp(serialInput, "SEND_PACKAGE"     ) == 0) send_command(6, MAX_CONN_TIME);
     else if (strcmp(serialInput, "TRY_UPLOAD"       ) == 0) send_command(7, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "PARAMS"           ) == 0) send_command(8, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "STATUS"           ) == 0) {
+    else if (strcmp(serialInput, "PARAMS"           ) == 0) {
+      if (!remaining_params) send_command(8, MAX_CONN_TIME);
+    } else if (strcmp(serialInput, "STATUS"           ) == 0) {
       // status driven switch that sends a status string to the CS if requested
       switch (status) { 
         case 0:
