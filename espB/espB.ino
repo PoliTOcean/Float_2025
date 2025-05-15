@@ -68,7 +68,6 @@ const uint16_t MAX_CONN_TIME = 100; // Time in ms that has to elapse before send
 uint8_t auto_mode_active = 0;     // 1 if AM is active, 0 otherwise
 uint8_t serial_rdy       = 0;     // Flag for signaling that the Serial software buffer serialInput is full and ready to be consumed
 uint8_t message_rdy      = 0;     // Flag for signaling that a new message arrived on the MAC layer and is ready to be read 
-uint8_t remaining_params = 0;     // Downcounter for sended parameters after the PARAMS command has been received
 int8_t  send_result      = -1;    // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t  status           = 0;     // State variable that is updated according to arriving messages and is used to feedback the CS when requested
 char    serialInput[BUFFER_SIZE]; // Serial software buffer used to empty the hardware one as soon as a new command arrives
@@ -148,7 +147,9 @@ uint8_t send_command (uint8_t cmd_code, uint16_t max_conn_time) {
   while (true) {                                                         // [* sending sequence start]
     send_result = -1;                                                    // send_result flat is cleared
     esp_now_send(broadcastAddress, (uint8_t *) &output, sizeof(output)); // Tries to send the code over MAC layer
-    while(send_result == -1);                                            // Waits for OnDataSent callback to set send_result flag
+    while(send_result == -1) {                                           // Waits for OnDataSent callback to set send_result flag
+      Serial.print("");
+    }
     if (send_result) return 1;                                           // If sending succeeds, function returns 1
     else if (millis() - prec_time > max_conn_time) return 0;             // If sending failed and max_conn_time milliseconds elapsed from time
   }//                                                                       reference set, the function returns 0. Otherwise it starts 
@@ -188,11 +189,6 @@ void serial_handler() {
       c = Serial.read();
     }
     for(int i=buffer_index; i<BUFFER_SIZE; i++) serialInput[i] = '\0'; // Fill the rest of the array with string terminators
-
-    if (strcmp(serialInput, "PARAMS") == 0) remaining_params = 3;
-    if (remaining_params <= 3 && remaining_params > 0) {
-      memcpy(&output.params[3 - remaining_params--], (float *) &serialInput, sizeof(float));
-    }
   }
 }
 
@@ -241,11 +237,22 @@ void loop() {
   }
 
   if (serial_rdy) {                            // Checks if there's any command ready to be consumed 
-    uint8_t result;
+
     // Broker that sends different command codes to the FLOAT according to the incoming command string:
     // CS has to be aware of this command strings, as well as the FLOAT should be able to bind different 
     // codes to the right command. Exception is the "STATUS" command string that expects a feedback to the
     // CS about the status of the system 
+    char *token = strtok(serialInput, " ");
+    if (strcmp(token, "PARAMS") == 0) {
+      //output.params[0] = (float) *strtok(NULL, " ");
+      //output.params[1] = (float) *strtok(NULL, " ");
+      //output.params[2] = (float) *strtok(NULL, " ");
+      output.params[0] = atof(strtok(NULL, " "));
+      output.params[1] = atof(strtok(NULL, " "));
+      output.params[2] = atof(strtok(NULL, " "));
+      send_command(8, MAX_CONN_TIME);
+    }
+    
     if      (strcmp(serialInput, "GO"               ) == 0) send_command(1, MAX_CONN_TIME);
     else if (strcmp(serialInput, "LISTENING"        ) == 0) send_command(2, MAX_CONN_TIME);
     else if (strcmp(serialInput, "BALANCE"          ) == 0) send_command(3, MAX_CONN_TIME);
@@ -253,13 +260,12 @@ void loop() {
     else if (strcmp(serialInput, "SWITCH_AUTO_MODE" ) == 0) send_command(5, MAX_CONN_TIME);
     else if (strcmp(serialInput, "SEND_PACKAGE"     ) == 0) send_command(6, MAX_CONN_TIME);
     else if (strcmp(serialInput, "TRY_UPLOAD"       ) == 0) send_command(7, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "PARAMS"           ) == 0) {
-      if (!remaining_params) send_command(8, MAX_CONN_TIME);
-    } else if (strcmp(serialInput, "STATUS"           ) == 0) {
+    else if (strcmp(serialInput, "STATUS"           ) == 0) {
+      uint8_t result;
       // status driven switch that sends a status string to the CS if requested
       switch (status) { 
         case 0:
-          Serial.print("CONNECTED");
+          Serial.print("CONNECTED&READY");
           break;
         case 1:
           Serial.print("CONNECTED_W_DATA");
@@ -282,7 +288,7 @@ void loop() {
       if (result) Serial.print("CONN_OK");
       else        Serial.print("CONN_LOST");
       Serial.print(" | ");
-      Serial.println("BATTERY: ");
+      Serial.print("BATTERY: ");
       Serial.println(battery_charge);
     }
 

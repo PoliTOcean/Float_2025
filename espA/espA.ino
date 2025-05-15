@@ -84,7 +84,7 @@ MS5837              sensor;   // Object for Bar02 interfacing
 esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we want to connect with
 AsyncWebServer      server(80);
 // Esp_now constant for peer MAC address value. Replace with the MAC address of your receiver (ESPB) 
-uint8_t             broadcastAddress[] = {0xE4, 0x65, 0xB8, 0x7E, 0x27, 0xAC};
+uint8_t             broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68};
 
 /** PROGRAM GLOBAL CONSTANTS **/
 const char*    SSID              = "Mi10";     // Name of the net the ESPA has to connect to for OTA firmware upload
@@ -99,16 +99,16 @@ const uint8_t  B_PIN             = 5;          // Pin of the BLUE LED
 const uint16_t MEAS_PERIOD       = 100;        // Period between two consecutive measurements during immersion phase, expressed in ms
 const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive writes to EEPROM during immersion phase, expressed in ms
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
+const uint16_t BATT_THRESH       = 11500;      // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
-const uint16_t BATT_THRESH       = 9000;       // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
-const uint32_t MAX_STEPS         = 2000;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
+const uint32_t MAX_STEPS         = 1890000;    // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
 const uint32_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
-const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    MAX_ERROR         = 0.1;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
-const float    TARGET_DEPTH      = 2.5;        // Target depth to be met and mantained when sinking, expressed in m
-const float    STAT_TIME         = 50;         // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
+const float    TARGET_DEPTH      = 0.5;        // Target depth to be met and mantained when sinking, expressed in m
+const float    STAT_TIME         = 7;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
 
 /** PROGRAM GLOBAL VARIABLES **/
 uint8_t  meas_cnt         = 0;  // Number of measurements occurred since the last write to EEPROM, must be reset before each profile
@@ -129,7 +129,7 @@ uint64_t blink_ref        = 0;  // Time reference for the blinking period of the
 uint64_t time_ref         = 0;  // Time reference for writing on the EEPROM during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
 float    depth            = 0;  // Depth measured during immersion phase, written to EEPROM and used to sense FLOAT stationarity, expressed in Pa
-float    Kp               = 300;  // PID parameters, modifiable with a specific command
+float    Kp               = 1500; // PID parameters, modifiable with a specific command
 float    Kd               = 0;
 float    Ki               = 0;  
 float    depth_integral   = 0;  // Integral of the depth values measured in a profile. Used for PID calculations.
@@ -346,7 +346,7 @@ void measure (float targetDepth, float time) {
             current_step = 0;
           }
           analogWriteFrequency(REV_FREQ);
-          digitalWrite(EN, LOW);                              // Enable motor if disabled
+          digitalWrite(EN, LOW);                                // Enable motor if disabled
           motor_stopped = 0;
         } else {
           if (millis() - start_time > rev_time) {
@@ -401,8 +401,8 @@ void measure (float targetDepth, float time) {
         }
       }
 
-      Serial.print("The just read depth is: ");
-      Serial.println(depth);
+      //Serial.print("The just read depth is: ");
+      //Serial.println(depth);
       
       prevDepth = depth;                             // Updates previous depth measurement with the last one
     }
@@ -443,19 +443,6 @@ void LED_check_for_blink () {
   } 
 }
 
-void check_battery () {
-  INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
-  output.charge = INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
-
-  // Serial.print("charge ");
-  // Serial.print(output.charge);
-  // Serial.println(" mV");
-
-  if (output.charge < BATT_THRESH)                                            // If battery charge is low, red fixed LED 
-    setLED(255, 0, 0, 0);  
-  else setLED(0, 255, 0, 750);                                                // Else, green blinking LED    
-}
-
 /** SETUP **/
 void setup () {
   Serial.begin(115200);                                                // Inits Serial Monitor
@@ -482,9 +469,7 @@ void setup () {
     return;
   }
 
-  uint8_t mac[6] = {0};
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-  Serial.printf("MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
 
   esp_now_register_recv_cb(OnDataRecv);                                // Registers esp_now arrival callback
   esp_now_register_send_cb(OnDataSent);                                // Registers esp_now sending callback
@@ -550,9 +535,18 @@ void loop () {
       {
         uint8_t result;
 
-        auto_committed = 0;       
+        auto_committed = 0;   
 
-        check_battery();                                        
+        INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
+        output.charge = INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
+
+        // Serial.print("charge ");
+        // Serial.print(output.charge);
+        // Serial.println(" mV");
+
+        if (output.charge < BATT_THRESH)                                            // If battery charge is low, red fixed LED 
+        setLED(255, 0, 0, 0);  
+        else setLED(0, 255, 0, 750);                                                // Else, green blinking LED                                           
 
         if (!idle) input.command = 0;                                               // If not already waiting for a command (1st idle loop), resets the command.
 //                                                                                     This check is necessary as the new command can arrive 
@@ -596,27 +590,27 @@ void loop () {
         result = send_message(CMD1_ACK, 1000);                      // Tries to send an acknowledgement to CS
         if (result || auto_committed) {                             // If ack arrived or AM committed the profile, starts immersion phase
             
-            if (auto_committed)
-              setLED(255, 127, 0, 1000);                             // If AM committed, yellow blinking LED
-            else setLED(0, 0, 255, 1000);                            // Else, blue blinking LED
+          if (auto_committed)
+            setLED(255, 127, 0, 1000);                             // If AM committed, yellow blinking LED
+          else setLED(0, 0, 255, 1000);                            // Else, blue blinking LED
 
-            meas_cnt = 0;
-            time_ref = millis();                                     // Stores time reference for the entire profile. Used in EEPROM writing
-            profile_count++;                                         // Increases the global counter of committed profiles
-            eeprom_read_ptr = eeprom_write_ptr;                      // Ensures only data from this profile is sent next                                      
+          meas_cnt = 0;
+          time_ref = millis();                                     // Stores time reference for the entire profile. Used in EEPROM writing
+          profile_count++;                                         // Increases the global counter of committed profiles
+          eeprom_read_ptr = eeprom_write_ptr;                      // Ensures only data from this profile is sent next                                      
 
-            for (int i=0; i<3; i++) {                                // Logic repeats three times: two for descending phase and the last for ascending phase
-              switch (i) {
-                case 0: measure(TARGET_DEPTH, STAT_TIME); break;     // measure function will drive the FLOAT and                    
-                case 1: measure(MAX_TARGET, 0); break;               // returns when detects stationarity for a requested time period
-                case 2: measure(0, 0); break;
-                default: break;
-              }
+          for (int i=0; i<3; i++) {                                // Logic repeats three times: two for descending phase and the last for ascending phase
+            switch (i) {
+              case 0: measure(TARGET_DEPTH, STAT_TIME); break;     // measure function will drive the FLOAT and                    
+              case 1: measure(MAX_TARGET, 0); break;               // returns when detects stationarity for a requested time period
+              case 2: measure(0, 0); break;
+              default: break;
             }
-            
-            digitalWrite(EN, HIGH);                                  // Disables the motor
           }
-        status = 0;                                                  // Returns to idle
+
+          digitalWrite(EN, HIGH);                                  // Disables the motor
+        } 
+        status = 0;                                                // Returns to idle     
       }
       break;
     case 2: // Data sending                                           // The command doesn't need an acknowledgement as 
@@ -747,6 +741,10 @@ void loop () {
           Kp = input.params[0];
           Kd = input.params[1]; 
           Ki = input.params[2];
+
+          //Serial.println(Kp);
+          //Serial.println(Kd);
+          //Serial.println(Ki);
         }
         status = 0; // Returns to idle
       }
