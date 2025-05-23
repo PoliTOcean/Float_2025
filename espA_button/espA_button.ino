@@ -138,6 +138,7 @@ float    Kp               = 300; // PID parameters, modifiable with a specific c
 float    Kd               = 0;
 float    Ki               = 0;  
 float    depth_integral   = 0;  // Integral of the depth values measured in a profile. Used for PID calculations.
+volatile long stepCount = 0;
 //                                 Must be reset before each profile
 
 /** PROGRAM LOCAL FUNCTIONS **/
@@ -436,6 +437,13 @@ void LED_check_for_blink () {
   } 
 }
 
+void countStep() {
+  if(digitalRead(DIR) == LOW)
+    stepCount++;
+  else
+    stepCount--;
+}
+
 /** SETUP **/
 void setup () {
   Serial.begin(115200);                                                // Inits Serial Monitor
@@ -521,6 +529,8 @@ void setup () {
   atm_pressure = sensor.pressure(MS5837::Pa);                          // Stores pressure value at water level for depth calculation, in Pa
 
   analogWrite(STEP, 127);                                              // Sets the duty cycle of the motor PWM to 50%
+
+  attachInterrupt(digitalPinToInterrupt(STEP), countStep, RISING);
 }
 
 /** MAIN SWITCH **/
