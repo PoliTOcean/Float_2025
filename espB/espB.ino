@@ -50,6 +50,8 @@ typedef struct input_message {
 
 typedef struct output_message {
   float params[3];
+  int32_t steps;
+  uint16_t freq;
   uint8_t command = 0;
 } output_message;
 
@@ -251,6 +253,17 @@ void loop() {
       output.params[1] = atof(strtok(NULL, " "));
       output.params[2] = atof(strtok(NULL, " "));
       send_command(8, MAX_CONN_TIME);
+    }
+
+    if (strcmp(token, "TEST_FREQ") == 0) {
+      output.freq = atoi(strtok(NULL, " "));
+      send_command(9, MAX_CONN_TIME);
+    }
+
+    if (strcmp(token, "TEST_STEPS") == 0) {
+      output.steps = atoi(strtok(NULL, " "));
+      Serial.println(output.steps);
+      send_command(10, MAX_CONN_TIME);
     }
     
     if      (strcmp(serialInput, "GO"               ) == 0) send_command(1, MAX_CONN_TIME);
