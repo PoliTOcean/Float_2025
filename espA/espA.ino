@@ -96,6 +96,8 @@ const char*    PASSWORD          = "ciao1234"; // Password for the net the ESPA 
 const uint8_t  DIR               = 25;         // Pin for motor direction driving
 const uint8_t  STEP              = 26;         // Pin for motor tension driving (used as PWM)
 const uint8_t  EN                = 27;         // Active-low pin for motor enabling
+const uint8_t  BUTTON_DOWN       = 16;
+const uint8_t  BUTTON_UP         = 17;
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles to complete in order to gain maximum points
 const uint8_t  R_PIN             = 19;         // Pin of the RED LED
 const uint8_t  G_PIN             = 18;         // Pin of the GREEN LED
@@ -105,8 +107,10 @@ const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
 const uint16_t BATT_THRESH       = 11500;      // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
-const uint16_t MAX_STEPS         = 1000;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
+const uint16_t MAX_STEPS         = 1700;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
 const uint32_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
+const uint32_t REV_PERIOD        = 1000/REV_FREQ;  
+const uint32_t MAX_DELTA         = MEAS_PERIOD/REV_PERIOD-1; 
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
 const float    MAX_ERROR         = 0.05;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
@@ -125,6 +129,7 @@ uint8_t  led_state        = 0;  // Tells about the RGB LED being on or off
 uint8_t  deviceNumber     = -1; // Number for the I2C interface of the INA220
 int8_t   send_result      = -1; // Flag for sending-over-MAC logic, needed to handle sending failure
 int8_t   status           = 0;  // Status of the FLOAT, drives the main switch and keeps track of the current phase
+uint16_t remaining_steps  = 0;  // PWM steps needed for the completion of a sinking/ascension phase 
 uint16_t eeprom_read_ptr  = 0;  // Pointer to the location of the last read byte in EEPROM
 uint16_t eeprom_write_ptr = 0;  // Pointer to the location of the next available byte in EEPROM
 uint16_t led_blink        = 0;  // Blinking period for the RGB LED, expressed in ms
@@ -314,7 +319,7 @@ void measure (float targetDepth, float time) {
   uint64_t prec_time_meas = millis();                 // Stores time reference for measurement period timer
   uint64_t start_time = millis();
   float prevDepth = 0;
-  float rev_time = 0;   
+  //float rev_time = 0;   
   float velocity = 0;
   float error = 0;
 
@@ -325,7 +330,7 @@ void measure (float targetDepth, float time) {
     LED_check_for_blink();                            // Makes the RGB LED blink at set period
     
     if (!motor_stopped) {
-      if (millis() - start_time > rev_time) {
+      if (remaining_steps == 0) {
         digitalWrite(EN, HIGH); // Since not used, disable motor to save power
         if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
           elapsed_stat++;
@@ -350,14 +355,12 @@ void measure (float targetDepth, float time) {
       if (targetDepth == 0 || targetDepth == MAX_TARGET) {
         if (motor_stopped) {
           if (targetDepth == MAX_TARGET) {
-            rev_time = ((MAX_STEPS-current_step) / (float) REV_FREQ) * 1000; 
+            remaining_steps = MAX_STEPS-current_step;
             digitalWrite(DIR, 0);
-            //current_step = MAX_STEPS;
           }
           else {
-            rev_time = (current_step/ (float) REV_FREQ) * 1000; // time of motor revolution in ms
+            remaining_steps = current_step;
             digitalWrite(DIR, 1);
-            //current_step = 0;
           }
           analogWriteFrequency(REV_FREQ);
           digitalWrite(EN, LOW);                                // Enable motor if disabled
@@ -372,24 +375,36 @@ void measure (float targetDepth, float time) {
         // ---------------------------
 
         if (PID_res >= 0) {
-          if (PID_res > REV_FREQ) PID_res = REV_FREQ;  // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
-          if (PID_res < 20 || current_step == MAX_STEPS) {
+          if (PID_res > MAX_DELTA) PID_res = MAX_DELTA;  // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
+          if (current_step == MAX_STEPS) {
             digitalWrite(EN, HIGH);
           } 
           else {
-            analogWriteFrequency(PID_res);
+            digitalWrite(STEP, 0);  
+            digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
             digitalWrite(EN, LOW);
+            for (uint8_t i=0; i<PID_res; i++) {           
+              digitalWrite(STEP, 1);
+              delay(REV_PERIOD/2);
+              digitalWrite(STEP, 0);
+              delay(REV_PERIOD/2);
+            }
           }
-          digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
         } else {
-          if (-PID_res > REV_FREQ) PID_res = -REV_FREQ;
-          if (-PID_res < 20 || current_step == 0) {
+          if (-PID_res > MAX_DELTA) PID_res = -MAX_DELTA;
+          if (current_step == 0) {
             digitalWrite(EN, HIGH);
           } else {
-            analogWriteFrequency(-PID_res);
+            digitalWrite(STEP, 0);
+            digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
             digitalWrite(EN, LOW);
+            for (uint8_t i=0; i<PID_res; i++) {     
+              digitalWrite(STEP, 1);
+              delay(REV_PERIOD/2);
+              digitalWrite(STEP, 0);
+              delay(REV_PERIOD/2);
+            }
           }
-          digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
         }
 
         if (targetDepth < depth + MAX_ERROR && targetDepth > depth - MAX_ERROR) {
@@ -407,12 +422,47 @@ void measure (float targetDepth, float time) {
   }
 }
 
+void ButtonUp_IRQ () {
+  digitalWrite(STEP, 0);
+  digitalWrite(DIR, 1);
+  digitalWrite(EN, 0);
+  for (uint8_t i=0; i<2; i++) {
+    digitalWrite(STEP, 1);
+    delay(REV_PERIOD/2);
+    digitalWrite(STEP, 0);
+    delay(REV_PERIOD/2);
+  } 
+  digitalWrite(EN, 1);
+  current_step = MAX_STEPS;
+}
+
+void ButtonDown_IRQ () {
+  digitalWrite(STEP, 0);
+  digitalWrite(DIR, 0);
+  digitalWrite(EN, 0);
+  for (uint8_t i=0; i<2; i++) {
+    digitalWrite(STEP, 1);
+    delay(REV_PERIOD/2);
+    digitalWrite(STEP, 0);
+    delay(REV_PERIOD/2);
+  } 
+  digitalWrite(EN, 1);
+  current_step = 0;
+}
+
 void Step_IRQ () {
   if (digitalRead(EN))
     return;
+
   if (!digitalRead(DIR)) {
     if(current_step < MAX_STEPS) current_step++;
   } else if (current_step > 0) current_step--;
+
+  if (current_step == 0 || current_step == MAX_STEPS) digitalWrite(EN, 1);
+
+  if (remaining_steps) {
+    remaining_steps--;
+  }
 }
 
 void setLED (uint8_t R, uint8_t G, uint8_t B, uint16_t period) {
@@ -458,7 +508,9 @@ void setup () {
   pinMode(R_PIN, OUTPUT);                                              // R LED
   pinMode(G_PIN, OUTPUT);                                              // G LED
   pinMode(B_PIN, OUTPUT);                                              // B LED
-  pinMode(EN, OUTPUT);
+  pinMode(EN, OUTPUT); 
+  pinMode(BUTTON_UP, INPUT_PULLUP);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);                                           
   digitalWrite(EN, HIGH);                                              // Disables the motor until needed
 
   if (!EEPROM.begin(EEPROM_SIZE)) {                                    // Inits EEPROM
@@ -533,11 +585,12 @@ void setup () {
 
   analogWrite(STEP, 127);                                              // Sets the duty cycle of the motor PWM to 50%
   attachInterrupt(digitalPinToInterrupt(STEP), Step_IRQ, RISING);
+  //attachInterrupt(digitalPinToInterrupt(BUTTON_UP), ButtonUp_IRQ, FALLING);
+  //attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), ButtonDown_IRQ, FALLING);
 }
 
 /** MAIN SWITCH **/
 void loop () {
-  Serial.println(current_step);
   switch (status) {   
     case 0: // Idle
       {
@@ -616,7 +669,7 @@ void loop () {
             }
           }
 
-          digitalWrite(EN, HIGH);                                  // Disables the motor
+          digitalWrite(EN, 1);                                     // Disables the motor
         } 
         status = 0;                                                // Returns to idle     
       }
@@ -661,9 +714,9 @@ void loop () {
         if (result) { // Commands execute only if their ack sending succeeds
           digitalWrite(DIR, 1);
           analogWriteFrequency(REV_FREQ);
-          digitalWrite(EN, LOW);
+          digitalWrite(EN, 0);
           delay(ROT_TIME);
-          digitalWrite(EN, HIGH);
+          digitalWrite(EN, 1);
         }
         status = 0;
       }
@@ -754,7 +807,7 @@ void loop () {
         status = 0; // Returns to idle
       }
       break;
-    case 9: // New command routine
+    case 9: // TEST_FREQ
      {
        uint8_t result;
     
@@ -766,7 +819,7 @@ void loop () {
        status = 0; // Returns to idle
      }
      break;
-    case 10: // New command routine
+    case 10: // TEST_STEPS
      {
        uint8_t result;
     
