@@ -265,7 +265,7 @@ void loop() {
       // status driven switch that sends a status string to the CS if requested
       switch (status) { 
         case 0:
-          Serial.print("CONNECTED&READY");
+          Serial.print("CONNECTED");
           break;
         case 1:
           Serial.print("CONNECTED_W_DATA");

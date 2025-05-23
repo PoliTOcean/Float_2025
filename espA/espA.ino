@@ -101,14 +101,14 @@ const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
 const uint16_t BATT_THRESH       = 11500;      // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
-const uint32_t MAX_STEPS         = 1890000;    // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
+const uint32_t MAX_STEPS         = 1800;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
 const uint32_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
-const float    MAX_ERROR         = 0.1;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    MAX_ERROR         = 0.05;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
-const float    TARGET_DEPTH      = 0.5;        // Target depth to be met and mantained when sinking, expressed in m
-const float    STAT_TIME         = 7;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
+const float    TARGET_DEPTH      = 0.1;        // Target depth to be met and mantained when sinking, expressed in m
+const float    STAT_TIME         = 5;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
 
 /** PROGRAM GLOBAL VARIABLES **/
 uint8_t  meas_cnt         = 0;  // Number of measurements occurred since the last write to EEPROM, must be reset before each profile
@@ -129,7 +129,7 @@ uint64_t blink_ref        = 0;  // Time reference for the blinking period of the
 uint64_t time_ref         = 0;  // Time reference for writing on the EEPROM during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
 float    depth            = 0;  // Depth measured during immersion phase, written to EEPROM and used to sense FLOAT stationarity, expressed in Pa
-float    Kp               = 1500; // PID parameters, modifiable with a specific command
+float    Kp               = 300; // PID parameters, modifiable with a specific command
 float    Kd               = 0;
 float    Ki               = 0;  
 float    depth_integral   = 0;  // Integral of the depth values measured in a profile. Used for PID calculations.
@@ -319,6 +319,16 @@ void measure (float targetDepth, float time) {
   while(true) {                                       // Waits for the FLOAT to stop
 
     LED_check_for_blink();                            // Makes the RGB LED blink at set period
+    
+    if (!motor_stopped) {
+      if (millis() - start_time > rev_time) {
+        digitalWrite(EN, HIGH); // Since not used, disable motor to save power
+        if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
+          elapsed_stat++;
+          if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
+        }
+      }
+    }
 
     if (millis() - prec_time_meas > MEAS_PERIOD) {    // Every MEAS_PERIOD ms reads from the sensor and tries to detect if FLOAT
 //                                                       stopped after updating the motor PWM using the PID output. 
@@ -348,15 +358,7 @@ void measure (float targetDepth, float time) {
           analogWriteFrequency(REV_FREQ);
           digitalWrite(EN, LOW);                                // Enable motor if disabled
           motor_stopped = 0;
-        } else {
-          if (millis() - start_time > rev_time) {
-            digitalWrite(EN, HIGH); // Since not used, disable motor to save power
-            if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
-              elapsed_stat++;
-              if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
-            }
-          }
-        }
+        } 
       } else {
         // PID output calculations ---
         error = targetDepth - depth;
@@ -367,7 +369,7 @@ void measure (float targetDepth, float time) {
 
         if (PID_res >= 0) {
           if (PID_res > REV_FREQ) PID_res = REV_FREQ;  // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
-          if (PID_res < 20) {
+          if (PID_res < 20 || current_step == MAX_STEPS) {
             digitalWrite(EN, HIGH);
             PID_res = 0;
           } 
@@ -378,7 +380,7 @@ void measure (float targetDepth, float time) {
           digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
         } else {
           if (-PID_res > REV_FREQ) PID_res = -REV_FREQ;
-          if (-PID_res < 20) {
+          if (-PID_res < 20 || current_step == 0) {
             digitalWrite(EN, HIGH);
             PID_res = 0;
           } else {
@@ -653,11 +655,8 @@ void loop () {
         if (result) { // Commands execute only if their ack sending succeeds
           digitalWrite(DIR, 1);
           analogWriteFrequency(REV_FREQ);
-          analogWrite(STEP, 127);
           digitalWrite(EN, LOW);
           delay(ROT_TIME);
-          analogWrite(STEP, 0);
-          analogWriteFrequency(1000);
           digitalWrite(EN, HIGH);
         }
         status = 0;
