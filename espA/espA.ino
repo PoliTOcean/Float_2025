@@ -72,6 +72,8 @@ typedef struct output_message {
 
 typedef struct input_message {
   float params[3];
+  int32_t steps;
+  uint16_t freq;
   uint8_t command = 0;
 } input_message;
 
@@ -125,6 +127,7 @@ uint16_t eeprom_read_ptr  = 0;  // Pointer to the location of the last read byte
 uint16_t eeprom_write_ptr = 0;  // Pointer to the location of the next available byte in EEPROM
 uint16_t led_blink        = 0;  // Blinking period for the RGB LED, expressed in ms
 uint16_t current_step     = 0;  // Number of steps done by the motor in the same direction wrt its initial position
+uint64_t test_period      = 0;  // Test steps period, updatable via the specific TEST_FREQ command 
 uint64_t blink_ref        = 0;  // Time reference for the blinking period of the RGB LED
 uint64_t time_ref         = 0;  // Time reference for writing on the EEPROM during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
@@ -748,17 +751,43 @@ void loop () {
         status = 0; // Returns to idle
       }
       break;
-    //case 9: // New command routine
-    //  {
-    //    uint8_t result;
-    //
-    //    result = send_message(CMD9_ACK, 1000); 
-    //    if (result) {
-    //      // Insert here your code
-    //    }
-    //    status = 0; // Returns to idle
-    //  }
-    //  break;
+    case 9: // New command routine
+     {
+       uint8_t result;
+    
+       result = send_message(CMD9_ACK, 1000); 
+       if (result) {
+         test_period = (uint64_t)(1/(float)input.freq * 1000);
+         Serial.println(test_period);
+       }
+       status = 0; // Returns to idle
+     }
+     break;
+    case 10: // New command routine
+     {
+       uint8_t result;
+    
+       result = send_message(CMD10_ACK, 1000); 
+       if (result) {
+        if (input.steps >= 0) digitalWrite(DIR, 0);
+        else {
+          digitalWrite(DIR, 1);
+          input.steps = -input.steps;
+        }
+        Serial.println(input.steps);
+        digitalWrite(STEP, 0);
+        digitalWrite(EN, 0);
+        for (uint8_t i=0; i<input.steps; i++) {          
+          digitalWrite(STEP, 1);
+          delay(test_period/2);
+          digitalWrite(STEP, 0);
+          delay(test_period/2);
+        }
+        digitalWrite(EN, 1);
+       }
+       status = 0; // Returns to idle
+     }
+     break;
     default: // Default case
       Serial.println("No command recognized, returning to idle...");
       status = 0;
