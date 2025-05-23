@@ -96,11 +96,12 @@ const uint8_t  MAX_PROFILES      = 2;          // Number of profiles to complete
 const uint8_t  R_PIN             = 19;         // Pin of the RED LED
 const uint8_t  G_PIN             = 18;         // Pin of the GREEN LED
 const uint8_t  B_PIN             = 5;          // Pin of the BLUE LED
+const uint8_t  BUTTON_DOWN       = 1;          // Pin for end-of-run signal, when ascending
+const uint8_t  BUTTON_UP         = 17;         // Pin for end-of-run signal, when sinking
 const uint16_t MEAS_PERIOD       = 100;        // Period between two consecutive measurements during immersion phase, expressed in ms
 const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive writes to EEPROM during immersion phase, expressed in ms
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
 const uint16_t BATT_THRESH       = 11500;      // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
-const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
 const uint32_t MAX_STEPS         = 1800;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
 const uint32_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
@@ -124,7 +125,6 @@ int8_t   status           = 0;  // Status of the FLOAT, drives the main switch a
 uint16_t eeprom_read_ptr  = 0;  // Pointer to the location of the last read byte in EEPROM
 uint16_t eeprom_write_ptr = 0;  // Pointer to the location of the next available byte in EEPROM
 uint16_t led_blink        = 0;  // Blinking period for the RGB LED, expressed in ms
-uint16_t current_step     = 0;  // Number of steps done by the motor in the same direction wrt its initial position
 uint64_t blink_ref        = 0;  // Time reference for the blinking period of the RGB LED
 uint64_t time_ref         = 0;  // Time reference for writing on the EEPROM during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
@@ -305,12 +305,10 @@ void write_EEPROM () {
 void measure (float targetDepth, float time) {
   uint8_t elapsed_stat = 0;
   uint8_t motor_stopped = 1;
-  int32_t calc_step = 0;
   int32_t PID_res = 0;
   uint64_t prec_time_meas = millis();                 // Stores time reference for measurement period timer
   uint64_t start_time = millis();
-  float prevDepth = 0;
-  float rev_time = 0;   
+  float prevDepth = 0;   
   float velocity = 0;
   float error = 0;
 
@@ -321,7 +319,7 @@ void measure (float targetDepth, float time) {
     LED_check_for_blink();                            // Makes the RGB LED blink at set period
     
     if (!motor_stopped) {
-      if (millis() - start_time > rev_time) {
+      if ((targetDepth == 0 && !digitalRead(BUTTON_UP)) || (targetDepth == MAX_TARGET && !digitalRead(BUTTON_DOWN))) {
         digitalWrite(EN, HIGH); // Since not used, disable motor to save power
         if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
           elapsed_stat++;
@@ -346,14 +344,10 @@ void measure (float targetDepth, float time) {
       if (targetDepth == 0 || targetDepth == MAX_TARGET) {
         if (motor_stopped) {
           if (targetDepth == MAX_TARGET) {
-            rev_time = ((MAX_STEPS-current_step) / (float) REV_FREQ) * 1000; 
             digitalWrite(DIR, 0);
-            current_step = MAX_STEPS;
           }
           else {
-            rev_time = (current_step/ (float) REV_FREQ) * 1000; // time of motor revolution in ms
             digitalWrite(DIR, 1);
-            current_step = 0;
           }
           analogWriteFrequency(REV_FREQ);
           digitalWrite(EN, LOW);                                // Enable motor if disabled
@@ -369,9 +363,8 @@ void measure (float targetDepth, float time) {
 
         if (PID_res >= 0) {
           if (PID_res > REV_FREQ) PID_res = REV_FREQ;  // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
-          if (PID_res < 20 || current_step == MAX_STEPS) {
+          if (PID_res < 20 || !digitalRead(BUTTON_DOWN)) {
             digitalWrite(EN, HIGH);
-            PID_res = 0;
           } 
           else {
             analogWriteFrequency(PID_res);
@@ -380,21 +373,14 @@ void measure (float targetDepth, float time) {
           digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
         } else {
           if (-PID_res > REV_FREQ) PID_res = -REV_FREQ;
-          if (-PID_res < 20 || current_step == 0) {
+          if (-PID_res < 20 || !digitalRead(BUTTON_UP)) {
             digitalWrite(EN, HIGH);
-            PID_res = 0;
           } else {
             analogWriteFrequency(-PID_res);
             digitalWrite(EN, LOW);
           }
           digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
         }
-
-        calc_step = current_step + PID_res * ((float) MEAS_PERIOD / 1000);
-        if (calc_step >= (int32_t) MAX_STEPS) current_step = MAX_STEPS;
-        else if (calc_step <= 0) current_step = 0;
-        else current_step = calc_step;
-        
 
 
         if (targetDepth < depth + MAX_ERROR && targetDepth > depth - MAX_ERROR) {
@@ -455,6 +441,8 @@ void setup () {
   pinMode(G_PIN, OUTPUT);                                              // G LED
   pinMode(B_PIN, OUTPUT);                                              // B LED
   pinMode(EN, OUTPUT);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);
+  pinMode(BUTTON_UP, INPUT_PULLUP);
   digitalWrite(EN, HIGH);                                              // Disables the motor until needed
 
   if (!EEPROM.begin(EEPROM_SIZE)) {                                    // Inits EEPROM
@@ -538,7 +526,7 @@ void loop () {
         uint8_t result;
 
         auto_committed = 0;   
-
+        Serial.println(digitalRead(BUTTON_DOWN));
         INA.waitForConversion(deviceNumber);                                        // Wait for conv and reset interrupt (interrupt is not used)
         output.charge = INA.getBusMilliVolts(deviceNumber);                         // Read battery charge
 
@@ -656,7 +644,7 @@ void loop () {
           digitalWrite(DIR, 1);
           analogWriteFrequency(REV_FREQ);
           digitalWrite(EN, LOW);
-          delay(ROT_TIME);
+          while(digitalRead(BUTTON_DOWN));
           digitalWrite(EN, HIGH);
         }
         status = 0;
