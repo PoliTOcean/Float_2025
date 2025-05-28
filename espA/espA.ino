@@ -583,7 +583,7 @@ void setup () {
   sensor.read();
   atm_pressure = sensor.pressure(MS5837::Pa);                          // Stores pressure value at water level for depth calculation, in Pa
 
-  analogWrite(STEP, 127);                                              // Sets the duty cycle of the motor PWM to 50%
+  //analogWrite(STEP, 127);                                              // Sets the duty cycle of the motor PWM to 50%
   attachInterrupt(digitalPinToInterrupt(STEP), Step_IRQ, RISING);
   //attachInterrupt(digitalPinToInterrupt(BUTTON_UP), ButtonUp_IRQ, FALLING);
   //attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), ButtonDown_IRQ, FALLING);
