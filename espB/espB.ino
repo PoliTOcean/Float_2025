@@ -227,10 +227,10 @@ void loop() {
     // Updates the status whit respect to the relative ack
          if (strcmp(input.message, "FLOAT_IDLE")        == 0) status = 0;                    // The FLOAT is in idle with no data to send
     else if (strcmp(input.message, "FLOAT_IDLE_W_DATA") == 0) status = 1;                    // The FLOAT is in idle and has some data to send
-    else status = 2;                                                                         // If it's not in idle, the FLOAT is executing a command
-    
-    Serial.println(input.message);                                                           // Sends incoming message on Serial channel 
-//                                                                                              for real time feedback to the CS                                                          
+    else {
+      status = 2;                                                                         // If it's not in idle, the FLOAT is executing a command
+      Serial.println(input.message);                                                           // Sends incoming message on Serial channel 
+    }   //                                                                                              for real time feedback to the CS                                                          
     battery_charge = input.charge;                                                           // Update charge value 
 
     if (strcmp(input.message, "SWITCH_AM_RECVD") == 0) auto_mode_active = !auto_mode_active; // If AM toggle command succeeded,
