@@ -1,0 +1,21 @@
+{
+  "name": "RGBLed",
+  "version": "1.0.0",
+  "description": "Custom RGB LED control library for Float project",
+  "keywords": "rgb,led,arduino,esp32",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "authors": [
+    {
+      "name": "Float Project",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "",
+  "dependencies": {},
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

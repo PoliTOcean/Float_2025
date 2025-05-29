@@ -146,3 +146,50 @@ Example of ESPB state response: **CONNECTED_W_DATA | AUTO_MODE_NO | CONN_OK**
 Links to Arduino library repositories:
 - ESPAsyncWebServer: https://github.com/dvarrel/ESPAsyncWebSrv 
 - AsyncElegantOTA: https://github.com/ayushsharma82/AsyncElegantOTA
+
+### LED STATUS INDICATORS
+
+The FLOAT is equipped with RGB LEDs on both ESP32 boards that provide visual feedback about the system status:
+
+#### ESPA (Float Board) LED States:
+| LED Color/Pattern | State | Description |
+|:----------------:|:-----:|:------------|
+| **Green Blink** | `LED_INIT` | System initializing |
+| **Green Solid** | `LED_IDLE` | Ready and idle, waiting for commands |
+| **Green Fast Blink** | `LED_IDLE_DATA` | Idle with data ready to send |
+| **Red Solid** | `LED_LOW_BATTERY` | Battery voltage below threshold (11.5V) |
+| **Red Fast Blink** | `LED_ERROR` | Error state or endstop hit |
+| **Blue Blink** | `LED_PROFILE` | Running depth profile |
+| **Yellow Blink** | `LED_AUTO_MODE` | Auto mode active |
+| **Purple Blink** | `LED_HOMING` | Motor homing in progress |
+| **Purple Solid** | `LED_MOTOR_MOVING` | Motor moving to position |
+| **Cyan Blink** | `LED_PID_CONTROL` | PID depth control active |
+| **White Blink** | `LED_COMMUNICATION` | Communicating with ESPB |
+| **Orange Blink** | `LED_OTA_MODE` | OTA update mode active |
+| **Off** | `LED_OFF` | System off or disabled |
+
+#### ESPB (Communication Bridge) LED States:
+| LED Pattern | State | Description |
+|:----------------:|:-----:|:------------|
+| **Slow Blink** | `LED_INIT` | System initializing (1 sec on/off) |
+| **Solid On** | `LED_IDLE` | Connected and ready |
+| **Fast Blink** | `LED_COMMUNICATION` | Communicating with ESPA or CS (200ms on/off) |
+| **Very Fast Blink** | `LED_ERROR` | Communication error (150ms on/off) |
+| **Triple Blink** | `LED_LOW_BATTERY` | ESPA battery low (on-off-on-off-on-off-pause) |
+| **Off** | `LED_OFF` | System off or disabled |
+
+> **Note**: ESPB uses the built-in LED (pin 2) with different blink patterns to indicate status, as it does not have external RGB connections.
+
+--------------------------------------------------------------------------
+
+### PROJECT UPDATES (Version 10.0.0)
+
+#### Major Improvements:
+- **Migration to PlatformIO**: Project restructured for modern development with dual environment support
+- **AccelStepper Integration**: Enhanced motor control with acceleration, precise positioning, and non-blocking operation
+- **Endstop Safety System**: Interrupt-driven endstop detection with emergency stop functionality
+- **Motor Homing**: Comprehensive homing sequence with timeout protection and safety margins
+- **Enhanced PID Control**: Tuned parameters for underwater operation with anti-windup protection
+- **RGB LED Status**: Comprehensive visual feedback system with 13 different states
+- **ElegantOTA Migration**: Updated from deprecated AsyncElegantOTA to modern ElegantOTA
+- **Improved Safety**: Multiple safety layers including endstop protection and motor limits
