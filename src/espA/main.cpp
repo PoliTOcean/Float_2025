@@ -43,10 +43,11 @@ const uint8_t DRV8825_RST = 35;             // Pin for DRV8825 reset
 
 /** MOTOR AND CONTROL CONSTANTS **/
 const uint16_t MAX_STEPS         = 1800;       // Number of motor steps for full range
-const uint32_t MAX_SPEED         = 300;        // Maximum motor speed in steps/sec
-const uint32_t HOMING_SPEED      = 200;        // Homing speed in steps/sec
-const uint16_t ENDSTOP_MARGIN    = 20;         // Safety margin from endstops in steps
+const uint32_t MAX_SPEED         = 1200;        // Maximum motor speed in steps/sec
+const uint32_t HOMING_SPEED      = 600;        // Homing speed in steps/sec
+const uint16_t ENDSTOP_MARGIN    = 50;         // Safety margin from endstops in steps
 const uint32_t HOMING_TIMEOUT    = 8000;      // Homing timeout in milliseconds
+const unsigned long ENDSTOP_DEBOUNCE_DELAY = 30; // Debounce delay in milliseconds
 
 /** TIMING CONSTANTS **/
 const uint16_t MEAS_PERIOD       = 100;        // Period between measurements in ms
@@ -62,15 +63,15 @@ const float    PID_INTEGRAL_LIMIT = 10.0;     // Anti-windup limit for integral 
 
 /** FLOAT SPECIFIC CONSTANTS **/
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles for maximum points
-const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT in meters
-const float    MAX_ERROR         = 0.5;        // Acceptable error span in meters
-const float    EPSILON           = 0.01;       // Equality threshold for measurements
-const float    TARGET_DEPTH      = 1.0;        // Target depth in meters
-const float    STAT_TIME         = 5;          // Time to maintain target depth in seconds
-const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target (special flag)
+const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
+const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
+const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
+const float    TARGET_DEPTH      = 1.0;        // Target depth to be met and mantained when sinking, expressed in m
+const float    STAT_TIME         = 5;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
 
 /** NETWORK CONSTANTS **/
-const char*    SSID              = "Float";     // OTA WiFi network name
+const char*    SSID              = "PIPO";     // OTA WiFi network name
 const char*    PASSWORD          = "politocean"; // OTA WiFi password
 
 /** GLOBAL OBJECTS **/
@@ -89,7 +90,7 @@ uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68}; // ESPB MAC
 uint8_t  meas_cnt         = 0;     // Measurement counter
 uint8_t  profile_count    = 0;     // Number of completed profiles
 uint8_t  auto_mode_active = 0;     // Auto mode status
-uint8_t  idle             = 0;     // Idle state flag
+uint8_t  idle             = 0;  // 1 if in idle phase, 0 otherwise
 uint8_t  auto_committed   = 0;     // Auto mode commit flag
 uint8_t  deviceNumber     = -1;    // INA220 device number
 int8_t   send_result      = -1;    // Message sending result
@@ -97,14 +98,22 @@ int8_t   status           = 0;     // Main state machine status
 uint16_t eeprom_read_ptr  = 0;     // EEPROM read pointer
 uint16_t eeprom_write_ptr = 0;     // EEPROM write pointer
 uint16_t current_step     = 0;     // Current motor position
+uint32_t test_speed       = MAX_SPEED;    // Default test speed in steps/sec
 uint64_t time_ref         = 0;     // Time reference for profiles
 float    atm_pressure     = 0;     // Atmospheric pressure reference
 float    depth            = 0;     // Current depth measurement
 
 /** ENDSTOP AND SAFETY VARIABLES **/
-volatile bool upper_endstop_hit = false;
-volatile bool lower_endstop_hit = false;
-volatile bool emergency_stop = false;
+// Volatile flags set by ISRs
+volatile bool upper_endstop_isr_triggered = false;
+volatile bool lower_endstop_isr_triggered = false;
+volatile unsigned long upper_endstop_isr_time = 0;
+volatile unsigned long lower_endstop_isr_time = 0;
+
+// Debounced states
+bool upper_endstop_hit = false;
+bool lower_endstop_hit = false;
+volatile bool emergency_stop = false; // Set by debounced logic
 bool motor_homed = false;
 
 /** PID CONTROL VARIABLES **/
@@ -118,7 +127,7 @@ FloatLEDState current_led_state = LED_INIT;
 unsigned long led_last_update = 0;
 
 /** DEBUG MODE VARIABLES **/
-bool debug_mode_active = false;
+bool debug_mode_active = true;
 
 /** COMMUNICATION STRUCTURES **/
 input_message  status_to_send;    // Data to send to espB (charge and messages)  
@@ -139,18 +148,23 @@ void handleEndstopHit();
 uint8_t send_message(const char* message, uint32_t timeout);
 float f_depth();
 void measure(float targetDepth, float time);
+void processDebouncedEndstops(); // Declaration for the new function
 
-/** INTERRUPT SERVICE ROUTINES **/
+/** INTERRUPT SERVICE ROUTINES (Minimal) **/
 void IRAM_ATTR upperEndstopISR() {
-  upper_endstop_hit = true;
-  emergency_stop = true;
-  stepper.stop();
+  // Only record the first trigger until debounced
+  if (!upper_endstop_isr_triggered) {
+    upper_endstop_isr_triggered = true;
+    upper_endstop_isr_time = millis();
+  }
 }
 
 void IRAM_ATTR lowerEndstopISR() {
-  lower_endstop_hit = true;
-  emergency_stop = true;
-  stepper.stop();
+  // Only record the first trigger until debounced
+  if (!lower_endstop_isr_triggered) {
+    lower_endstop_isr_triggered = true;
+    lower_endstop_isr_time = millis();
+  }
 }
 
 /** LED CONTROL FUNCTIONS **/
@@ -169,13 +183,13 @@ void setLEDState(FloatLEDState state) {
       led.setColor(0, 255, 0); // Green solid
       break;
     case LED_IDLE_DATA:
-      led.flash(RGBLed::GREEN, 250); // Green fast blink
+      led.flash(RGBLed::GREEN, 500); // Green fast blink
       break;
     case LED_LOW_BATTERY:
       led.setColor(255, 0, 0); // Red solid
       break;
     case LED_ERROR:
-      led.flash(RGBLed::RED, 100); // Red fast blink
+      led.flash(RGBLed::RED, 500); // Red fast blink
       break;
     case LED_PROFILE:
       led.flash(RGBLed::BLUE, 500); // Blue blink
@@ -184,7 +198,7 @@ void setLEDState(FloatLEDState state) {
       led.flash(RGBLed::YELLOW, 750); // Yellow blink
       break;
     case LED_HOMING:
-      led.flash(RGBLed::MAGENTA, 300); // Purple blink
+      led.flash(RGBLed::MAGENTA, 500); // Purple blink
       break;
     case LED_MOTOR_MOVING:
       led.setColor(255, 0, 255); // Purple solid
@@ -193,10 +207,10 @@ void setLEDState(FloatLEDState state) {
       led.flash(RGBLed::CYAN, 600); // Cyan blink
       break;
     case LED_COMMUNICATION:
-      led.flash(RGBLed::WHITE, 200); // White blink
+      led.flash(RGBLed::WHITE, 500); // White blink
       break;
     case LED_OTA_MODE:
-      led.flash(0x255A00, 400); // Orange blink
+      led.flash(0x255A00, 500); // Orange blink
       break;
   }
 }
@@ -212,14 +226,54 @@ void updateLED() {
   led.update();
 }
 
+/** ENDSTOP DEBOUNCING PROCESSING **/
+void processDebouncedEndstops() {
+  unsigned long current_time = millis();
+
+  // --- Upper Endstop Debouncing ---
+  if (upper_endstop_isr_triggered) {
+    if (current_time - upper_endstop_isr_time >= ENDSTOP_DEBOUNCE_DELAY) {
+      // Check actual pin state after debounce delay
+      //if (digitalRead(BUTTON_UP) == LOW) { // Active low
+        if (!upper_endstop_hit) { // Process only if not already considered hit
+          Debug.println("Debounced: Upper Endstop HIT!");
+          upper_endstop_hit = true; // Set the debounced state
+          emergency_stop = true;    // Trigger emergency stop
+          stepper.setCurrentPosition(stepper.targetPosition());     // Stop motor immediately
+        }
+        upper_endstop_isr_triggered = false;
+      //}
+    }
+  }
+
+  // --- Lower Endstop Debouncing ---
+  if (lower_endstop_isr_triggered) {
+    if (current_time - lower_endstop_isr_time >= ENDSTOP_DEBOUNCE_DELAY) {
+      // Check actual pin state after debounce delay
+      //if (digitalRead(BUTTON_DOWN) == LOW) { // Active low
+        if (!lower_endstop_hit) {
+          Debug.println("Debounced: Lower Endstop HIT!");
+          lower_endstop_hit = true;
+          emergency_stop = true;
+          stepper.setCurrentPosition(stepper.targetPosition());
+        }
+        lower_endstop_isr_triggered = false;
+      //}
+    }
+  }
+}
+
 /** MOTOR CONTROL AND SAFETY FUNCTIONS **/
 bool homeMotor() {
   Debug.println("Starting homing sequence...");
   setLEDState(LED_HOMING);
   
   motor_homed = false;
+  // Reset all endstop states before starting a move
   upper_endstop_hit = false;
   lower_endstop_hit = false;
+  upper_endstop_isr_triggered = false;
+  lower_endstop_isr_triggered = false;
   emergency_stop = false;
   
   // Enable motor
@@ -228,49 +282,50 @@ bool homeMotor() {
   stepper.setAcceleration(HOMING_SPEED / 2);
   
   // Move towards lower endstop (home position)
+  Debug.println("Homing: Moving towards lower endstop...");
   stepper.move(-MAX_STEPS * 2); // Move more than full range to ensure hitting endstop
   
   unsigned long startTime = millis();
   
-  // Wait for lower endstop hit or timeout
-  while (!lower_endstop_hit && (millis() - startTime) < HOMING_TIMEOUT) {
+  // Wait for lower_endstop_hit (set by processDebouncedEndstops) or timeout or other emergency
+  while (!lower_endstop_hit && (millis() - startTime) < HOMING_TIMEOUT && !emergency_stop) {
     stepper.run();
+    processDebouncedEndstops(); // Check and process endstops frequently
     updateLED();
     yield();
-    
-    if (emergency_stop) break;
   }
   
-  stepper.stop();
-  delay(100);
+  // If loop exited due to timeout or non-lower_endstop_hit emergency, ensure motor is stopped
+  if (!lower_endstop_hit && !emergency_stop) { 
+      stepper.stop(); 
+  }
+  // If emergency_stop is true, stepper.stop() was already called by processDebouncedEndstops
   
-  if (lower_endstop_hit) {
-    Debug.println("Lower endstop found");
-    
-    // Back away from endstop
-    emergency_stop = false;
-    lower_endstop_hit = false;
-    
-    stepper.move(ENDSTOP_MARGIN);
-    while (stepper.distanceToGo() != 0) {
-      stepper.run();
-      updateLED();
-      yield();
-    }
-    
-    // Set home position
-    stepper.setCurrentPosition(0);
+  delay(100); // Allow motor to settle
+  
+  if (lower_endstop_hit) { // Check the debounced flag
+    Debug.println("Homing: Lower endstop found and debounced.");
+    handleEndstopHit(); // Back off from the endstop, sets position to ENDSTOP_MARGIN
+
+    stepper.setCurrentPosition(0); // Define this backed-off position as HOME (0)
     current_step = 0;
     motor_homed = true;
+    emergency_stop = false; // Homing successful, clear emergency for next operations
     
     Debug.println("Homing completed successfully");
     setLEDState(LED_IDLE);
     stepper.disableOutputs();
     return true;
   } else {
-    Debug.println("Homing failed - timeout or error");
+    Debug.println("Homing failed - timeout or other emergency stop");
+    if (emergency_stop && upper_endstop_hit) {
+        Debug.println("Homing failed: Upper endstop hit unexpectedly.");
+        handleEndstopHit(); // Handle the unexpected upper hit (backs off, sets position)
+    }
+    // emergency_stop remains true if it was set by an endstop
     setLEDState(LED_ERROR);
     stepper.disableOutputs();
+    motor_homed = false;
     return false;
   }
 }
@@ -282,47 +337,53 @@ bool safeMoveTo(long targetPosition) {
   }
   
   // Clamp target position to safe range
-  if (targetPosition < ENDSTOP_MARGIN) {
-    targetPosition = ENDSTOP_MARGIN;
+  if (targetPosition < ENDSTOP_MARGIN) { // Target is 0 after homing, so allow moving to 0
+    targetPosition = ENDSTOP_MARGIN;     // But general moves should respect margin
   }
   if (targetPosition > (MAX_STEPS - ENDSTOP_MARGIN)) {
     targetPosition = MAX_STEPS - ENDSTOP_MARGIN;
   }
   
-  emergency_stop = false;
+  // Reset all endstop states before starting a move
   upper_endstop_hit = false;
   lower_endstop_hit = false;
+  upper_endstop_isr_triggered = false;
+  lower_endstop_isr_triggered = false;
+  emergency_stop = false;
   
   setLEDState(LED_MOTOR_MOVING);
   stepper.enableOutputs();
+  stepper.setMaxSpeed(MAX_SPEED); // Ensure normal operating speed
+  stepper.setAcceleration(MAX_SPEED / 2);
   stepper.moveTo(targetPosition);
   
+  Debug.printf("safeMoveTo: Moving to %ld\n", targetPosition);
   // Run until target reached or emergency stop
   while (stepper.distanceToGo() != 0 && !emergency_stop) {
     stepper.run();
+    processDebouncedEndstops(); // Check and process endstops frequently
     updateLED();
     yield();
-    
-    // Check for endstop hits
-    if (upper_endstop_hit || lower_endstop_hit) {
-      Debug.println("Emergency stop - endstop hit during movement");
-      stepper.stop();
-      handleEndstopHit();
-      stepper.disableOutputs();
-      return false;
-    }
   }
   
+  // If loop exited due to emergency_stop, an endstop was hit and debounced
+  if (emergency_stop) {
+    Debug.println("safeMoveTo: Emergency stop triggered by endstop.");
+    // stepper.stop() was already called by processDebouncedEndstops
+    handleEndstopHit(); // Back off from the endstop, updates position
+    current_step = stepper.currentPosition(); // Update current_step after backoff
+    stepper.disableOutputs();
+    // emergency_stop remains true, signaling failure of this move
+    setLEDState(LED_ERROR); // Or IDLE if error is handled and cleared
+    return false; // Movement failed
+  }
+  
+  // If loop exited because distanceToGo is 0 (successful move)
   current_step = stepper.currentPosition();
   stepper.disableOutputs();
-  
-  if (!emergency_stop) {
-    Debug.printf("Motor moved to position: %ld\n", current_step);
-    return true;
-  } else {
-    Debug.println("Movement interrupted by emergency stop");
-    return false;
-  }
+  Debug.printf("Motor moved to position: %ld\n", current_step);
+  setLEDState(LED_IDLE); 
+  return true;
 }
 
 bool safeMoveSteps(long steps) {
@@ -331,37 +392,67 @@ bool safeMoveSteps(long steps) {
 }
 
 void handleEndstopHit() {
+  // Motor is already stopped by processDebouncedEndstops.
+  // This function's job is to back off and update position.
+  Debug.println("handleEndstopHit: Processing debounced endstop.");
+  stepper.enableOutputs(); // Ensure motor is enabled for backing off
+
   if (upper_endstop_hit) {
-    Debug.println("Upper endstop hit - backing away");
-    delay(100);
-    emergency_stop = false;
-    upper_endstop_hit = false;
-    
-    stepper.move(-ENDSTOP_MARGIN);
+    Debug.println("handleEndstopHit: Upper endstop - backing away.");
+    detachInterrupt(digitalPinToInterrupt(BUTTON_UP)); 
+
+    stepper.setAcceleration(MAX_SPEED / 2); 
+    stepper.move(-ENDSTOP_MARGIN); // Relative move
+    unsigned long backoffStartTime = millis();
     while (stepper.distanceToGo() != 0) {
+      // Do not call processDebouncedEndstops here to avoid re-triggering on the same switch
+      // or complex interactions if the OTHER switch is hit during this tiny move.
+      // If the other switch is hit, it's a catastrophic failure anyway.
       stepper.run();
+      updateLED(); // Keep LED updated
       yield();
+      if (millis() - backoffStartTime > 2000) { // Timeout for backoff
+          Debug.println("handleEndstopHit: Timeout backing off upper endstop!");
+          stepper.stop();
+          break;
+      }
     }
+    stepper.setCurrentPosition(MAX_STEPS - ENDSTOP_MARGIN); // Define position after backoff
+    current_step = stepper.currentPosition();
+    Debug.printf("handleEndstopHit: Backed off upper. New pos: %d\n", current_step);
     
-    stepper.setCurrentPosition(MAX_STEPS - ENDSTOP_MARGIN);
-    current_step = MAX_STEPS - ENDSTOP_MARGIN;
+    upper_endstop_hit = false; // Clear the state now that we've handled it
+    attachInterrupt(digitalPinToInterrupt(BUTTON_UP), upperEndstopISR, FALLING); 
   }
   
   if (lower_endstop_hit) {
-    Debug.println("Lower endstop hit - backing away");
-    delay(100);
-    emergency_stop = false;
-    lower_endstop_hit = false;
-    
+    Debug.println("handleEndstopHit: Lower endstop - backing away.");
+    detachInterrupt(digitalPinToInterrupt(BUTTON_DOWN));
+
+    stepper.setAcceleration(HOMING_SPEED / 2); // Use homing accel for consistency
     stepper.move(ENDSTOP_MARGIN);
+    unsigned long backoffStartTime = millis();
     while (stepper.distanceToGo() != 0) {
       stepper.run();
+      updateLED();
       yield();
+      if (millis() - backoffStartTime > 2000) { // Timeout for backoff
+          Debug.println("handleEndstopHit: Timeout backing off lower endstop!");
+          stepper.stop();
+          break;
+      }
     }
-    
-    stepper.setCurrentPosition(ENDSTOP_MARGIN);
-    current_step = ENDSTOP_MARGIN;
+    // This position is the safe margin *from* the physical switch.
+    // If this was part of homing, homeMotor() will then call setCurrentPosition(0).
+    stepper.setCurrentPosition(ENDSTOP_MARGIN); 
+    current_step = stepper.currentPosition();
+    Debug.printf("handleEndstopHit: Backed off lower. New pos: %d\n", current_step);
+
+    lower_endstop_hit = false; // Clear the state
+    attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), lowerEndstopISR, FALLING);
   }
+  // emergency_stop is NOT cleared here. The calling function (safeMoveTo/homeMotor) decides.
+  stepper.disableOutputs(); // Disable motor after backing off
 }
 
 /** IMPROVED PID CONTROL **/
@@ -409,14 +500,10 @@ float calculatePID(float targetDepth, float currentDepth) {
 /** COMMUNICATION FUNCTIONS **/
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   send_result = (status == ESP_NOW_SEND_SUCCESS) ? 1 : 0;
-  if (status == ESP_NOW_SEND_SUCCESS) {
-    setLEDState(LED_COMMUNICATION);
-  }
 }
 
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   memcpy(&command_received, incomingData, sizeof(command_received));
-  setLEDState(LED_COMMUNICATION);
 }
 
 uint8_t send_message(const char* message, uint32_t timeout) {
@@ -519,25 +606,30 @@ void measure(float targetDepth, float time) {
         meas_cnt++;
       }
       
-      // Check for profile completion conditions
-      if (time > 0 && (millis() - start_time) >= (time * 1000)) {
-        Debug.println("Profile time completed");
-        break;
-      }
-      
       // Check for depth stability (stationary detection)
       static float last_depth_check = 0;
       static int stable_count = 0;
-      
-      if (abs(depth - last_depth_check) < EPSILON) {
-        stable_count++;
-        if (stable_count >= (STAT_TIME * 1000 / MEAS_PERIOD)) {
-          Serial.println("Float is stationary - profile complete");
-          break;
+
+      if (targetDepth == 0 || targetDepth == MAX_TARGET) {  // case for surface or max depth
+        if (abs(depth - last_depth_check) < EPSILON) {
+          stable_count++;
+          if (stable_count >= (time * 1000 / MEAS_PERIOD)) {
+            Debug.println("Float is stationary - profile complete");
+            break;
+          }
+        } else {
+          stable_count = 0;
         }
-      } else {
-        stable_count = 0;
+      } else {                                            // case for target depth
+        if (abs(depth - targetDepth) < MAX_ERROR) {
+          stable_count++;
+          if (stable_count >= (time * 1000 / MEAS_PERIOD)) {
+            Debug.println("Profile at target depth complete");
+            break;
+          }
+        }
       }
+
       last_depth_check = depth;
     }
     
@@ -550,11 +642,12 @@ void measure(float targetDepth, float time) {
   stepper.disableOutputs();
   setLEDState(LED_IDLE);
   
-  Serial.println("Measurement completed");
+  Debug.println("Measurement completed");
 }
 
 /** SETUP FUNCTION **/
 void setup() {
+  delay(100);
   Serial.begin(115200); 
   Serial.println("Float ESPA v10.0 - Starting initialization...");
   
@@ -570,11 +663,9 @@ void setup() {
   digitalWrite(DRV8825_RST, HIGH);   // Keep driver out of reset by default
 
   
-  // Initialize endstop pins and interrupts
+  // Initialize endstop pins
   pinMode(BUTTON_UP, INPUT_PULLUP);
   pinMode(BUTTON_DOWN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_UP), upperEndstopISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), lowerEndstopISR, FALLING);
   
   // Initialize stepper motor
   stepper.setMaxSpeed(MAX_SPEED);
@@ -616,6 +707,10 @@ void setup() {
     setLEDState(LED_ERROR);
     while(1) delay(1000);
   }
+
+  // Initialize DebugSerial library
+  Debug.begin(&debug_mode_active, send_message);
+  Debug.println("Debug serial initialized - ready for remote debugging");
   
   // Initialize I2C and find INA220
   Wire.begin();
@@ -658,10 +753,10 @@ void setup() {
   sensor.read();
   atm_pressure = sensor.pressure(MS5837::Pa);
   Debug.printf("Atmospheric pressure: %.2f Pa\n", atm_pressure);
-  
-  // Initialize DebugSerial library
-  Debug.begin(&debug_mode_active, send_message);
-  Debug.println("Debug serial initialized - ready for remote debugging");
+
+  delay(100);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_UP), upperEndstopISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), lowerEndstopISR, FALLING);
   
   // Perform motor homing
   Debug.println("Starting motor homing...");
@@ -681,6 +776,19 @@ void setup() {
 /** MAIN LOOP **/
 void loop() {
   updateLED();
+
+  // Process debounced endstops, especially if motor is idle, to catch unexpected hits.
+  // Movement functions also call this, but this is a safety net.
+  if (stepper.distanceToGo() == 0 && !emergency_stop) { // If motor is supposed to be idle
+      processDebouncedEndstops(); 
+      if (emergency_stop) { // An endstop was hit while idle
+          Debug.println("Endstop hit while motor was idle!");
+          handleEndstopHit(); // Back off
+          // emergency_stop remains true. The system is now in an error state.
+          // The next command or state transition should handle this.
+          setLEDState(LED_ERROR); 
+      }
+  }
   
   switch (status) {
     case 0: // Idle
@@ -714,6 +822,10 @@ void loop() {
           }
           
           status = command_received.command;
+          if (status != 0) {
+            idle = 0;
+            setLEDState(LED_COMMUNICATION);
+          }
         } else if (profile_count < MAX_PROFILES && auto_mode_active) {
           // Auto mode activation
           setLEDState(LED_AUTO_MODE);
@@ -737,7 +849,7 @@ void loop() {
         
         if (result) {
           setLEDState(LED_PROFILE);
-          Serial.println("Starting profile execution");
+          Debug.println("Starting profile execution");
           
           // Reset measurement counter and time reference
           meas_cnt = 0;
@@ -748,26 +860,27 @@ void loop() {
           for (int i = 0; i < 3; i++) {
             switch (i) {
               case 0: 
-                Serial.println("Phase 0: Descending to target depth");
+                Debug.println("Phase 0: Descending to target depth");
                 measure(TARGET_DEPTH, STAT_TIME); 
                 break;
               case 1: 
-                Serial.println("Phase 1: Descending to maximum depth (pool bottom)");
-                measure(MAX_TARGET, 0); 
+                Debug.println("Phase 1: Descending to maximum depth (pool bottom)");
+                measure(MAX_TARGET, 5); 
                 break;
               case 2: 
-                Serial.println("Phase 2: Ascending to surface");
-                measure(0, 0); 
+                Debug.println("Phase 2: Ascending to surface");
+                measure(0, 2); 
                 break;
               default: 
                 break;
             }
+            delay(500); // Wait between phases
           }
           
           stepper.disableOutputs(); // Disable motor after profile completion
           
           profile_count++;
-          Serial.printf("Profile %d completed\n", profile_count);
+          Debug.printf("Profile %d completed\n", profile_count);
         }
         
         status = 0; // Return to idle
@@ -779,7 +892,7 @@ void loop() {
         char line[OUTPUT_LEN];
         sensor_data data;
         
-        Serial.println("Sending stored data to Control Station");
+        Debug.println("Sending stored data to Control Station");
         
         while (eeprom_read_ptr + sizeof(sensor_data) <= eeprom_write_ptr) {
           // Read struct from EEPROM
@@ -798,7 +911,7 @@ void loop() {
         strcpy(line, "STOP_DATA");
         send_message(line, 100); // Signal end of data transmission
         
-        Serial.println("Data transmission completed");
+        Debug.println("Data transmission completed");
         status = 0; // Return to idle
       }
       break;
@@ -836,7 +949,7 @@ void loop() {
         uint8_t result = send_message(CMD5_ACK, 1000);
         if (result) {
           auto_mode_active = !auto_mode_active;
-          Serial.printf("Auto mode: %s\n", auto_mode_active ? "ENABLED" : "DISABLED");
+          Debug.printf("Auto mode: %s\n", auto_mode_active ? "ENABLED" : "DISABLED");
           if (auto_mode_active) {
             setLEDState(LED_AUTO_MODE);
           } else {
@@ -851,7 +964,7 @@ void loop() {
       {
         char package[OUTPUT_LEN];
         
-        Serial.println("Sending test package");
+        Debug.println("Sending test package");
         sensor.read(); // Update sensor readings
         
         // Format test package with current sensor data
@@ -861,7 +974,7 @@ void loop() {
         
         send_message(package, 1000); // Send test package (acknowledgment is the package itself)
         
-        Serial.println("Test package sent");
+        Debug.println("Test package sent");
         status = 0;
       }
       break;
@@ -871,22 +984,22 @@ void loop() {
         uint8_t result = send_message(CMD7_ACK, 1000);
         if (result) {
           setLEDState(LED_OTA_MODE);
-          Serial.println("Starting OTA server...");
+          Debug.println("Starting OTA server...");
           
           // Connect to WiFi
           WiFi.mode(WIFI_AP_STA);
           WiFi.begin(SSID, PASSWORD);
           
           unsigned long wifi_timeout = millis();
-          while (WiFi.status() != WL_CONNECTED && (millis() - wifi_timeout < 30000)) {
+          while (WiFi.status() != WL_CONNECTED && (millis() - wifi_timeout < 60000)) {
             updateLED();
             delay(500);
-            Serial.print(".");
+            Debug.print(".");
           }
           
           if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("\nWiFi connected");
-            Serial.printf("OTA Server: http://%s/update\n", WiFi.localIP().toString().c_str());
+            Debug.println("\nWiFi connected");
+            Debug.printf("OTA Server: http://%s/update\n", WiFi.localIP().toString().c_str());
             
             // Start ElegantOTA
             ElegantOTA.begin(&server);
@@ -904,7 +1017,7 @@ void loop() {
             // Disconnect WiFi (ElegantOTA doesn't need explicit cleanup)
             WiFi.disconnect();
           } else {
-            Serial.println("\nFailed to connect to WiFi for OTA");
+            Debug.println("\nFailed to connect to WiFi for OTA");
           }
         }
         status = 0;
@@ -920,7 +1033,7 @@ void loop() {
           Ki = command_received.params[1]; 
           Kd = command_received.params[2];
           
-          Serial.printf("PID parameters updated: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp, Ki, Kd);
+          Debug.printf("PID parameters updated: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp, Ki, Kd);
         }
         status = 0;
       }
@@ -931,9 +1044,10 @@ void loop() {
         uint8_t result = send_message(CMD9_ACK, 1000);
         if (result) {
           // Limit frequency to safe range
-          if (command_received.freq > 800) command_received.freq = 800;
+          if (command_received.freq > 1200) command_received.freq = 1200;
           if (command_received.freq < 10) command_received.freq = 10;
-          Serial.printf("Test frequency set to: %d Hz\n", command_received.freq);
+          test_speed = command_received.freq;
+          Debug.printf("Test frequency set to: %d Hz\n", test_speed);
         }
         status = 0;
       }
@@ -943,10 +1057,10 @@ void loop() {
       {
         uint8_t result = send_message(CMD10_ACK, 1000);
         if (result) {
-          Serial.printf("Executing test movement: %ld steps\n", command_received.steps);
+          Debug.printf("Executing test movement: %ld steps\n", command_received.steps);
           
           // Set motor speed based on test frequency
-          stepper.setMaxSpeed(command_received.freq);
+          stepper.setMaxSpeed(test_speed);
           
           if (safeMoveSteps(command_received.steps)) {
             Debug.printf("Test movement completed. Current position: %d\n", current_step);
