@@ -45,9 +45,10 @@ const uint8_t DRV8825_RST = 35;             // Pin for DRV8825 reset
 const uint16_t MAX_STEPS         = 1800;       // Number of motor steps for full range
 const uint32_t MAX_SPEED         = 1200;        // Maximum motor speed in steps/sec
 const uint32_t HOMING_SPEED      = 600;        // Homing speed in steps/sec
-const uint16_t ENDSTOP_MARGIN    = 50;         // Safety margin from endstops in steps
+const uint16_t ENDSTOP_MARGIN    = 30;         // Safety margin from endstops in steps
 const uint32_t HOMING_TIMEOUT    = 8000;      // Homing timeout in milliseconds
 const unsigned long ENDSTOP_DEBOUNCE_DELAY = 30; // Debounce delay in milliseconds
+const uint16_t ENDSTOP_ACTIVE_STEPS = 200;    // Only check endstops when motor is within this many steps of them
 
 /** TIMING CONSTANTS **/
 const uint16_t MEAS_PERIOD       = 100;        // Period between measurements in ms
@@ -104,17 +105,17 @@ float    atm_pressure     = 0;     // Atmospheric pressure reference
 float    depth            = 0;     // Current depth measurement
 
 /** ENDSTOP AND SAFETY VARIABLES **/
-// Volatile flags set by ISRs
-volatile bool upper_endstop_isr_triggered = false;
-volatile bool lower_endstop_isr_triggered = false;
-volatile unsigned long upper_endstop_isr_time = 0;
-volatile unsigned long lower_endstop_isr_time = 0;
-
-// Debounced states
+// Remove all ISR-related variables
 bool upper_endstop_hit = false;
 bool lower_endstop_hit = false;
-volatile bool emergency_stop = false; // Set by debounced logic
+volatile bool emergency_stop = false;
 bool motor_homed = false;
+
+// Add debouncing variables for polling
+unsigned long upper_button_pressed_time = 0;
+unsigned long lower_button_pressed_time = 0;
+bool upper_button_debouncing = false;
+bool lower_button_debouncing = false;
 
 /** PID CONTROL VARIABLES **/
 float pid_integral = 0.0;
@@ -142,28 +143,68 @@ bool homeMotor();
 bool safeMoveTo(long targetPosition);
 bool safeMoveSteps(long steps);
 float calculatePID(float targetDepth, float currentDepth);
-void IRAM_ATTR upperEndstopISR();
-void IRAM_ATTR lowerEndstopISR();
 void handleEndstopHit();
 uint8_t send_message(const char* message, uint32_t timeout);
 float f_depth();
 void measure(float targetDepth, float time);
-void processDebouncedEndstops(); // Declaration for the new function
+void processEndstops(bool is_homing);
 
-/** INTERRUPT SERVICE ROUTINES (Minimal) **/
-void IRAM_ATTR upperEndstopISR() {
-  // Only record the first trigger until debounced
-  if (!upper_endstop_isr_triggered) {
-    upper_endstop_isr_triggered = true;
-    upper_endstop_isr_time = millis();
+/** ENDSTOP POLLING PROCESSING **/
+void processEndstops(bool is_homing) {
+  unsigned long current_time = millis();
+  long current_position = stepper.currentPosition();
+  long target_position = stepper.targetPosition();
+  bool motor_moving_up = (target_position > current_position);
+  bool motor_moving_down = (target_position < current_position);
+  
+  // --- Upper Endstop Processing ---
+  bool check_upper = motor_moving_up && (current_position >= (MAX_STEPS - ENDSTOP_ACTIVE_STEPS));
+  
+  if (check_upper && digitalRead(BUTTON_UP) == LOW) { // Button pressed (active low)
+    if (!upper_button_debouncing) {
+      // Start debouncing
+      upper_button_debouncing = true;
+      upper_button_pressed_time = current_time;
+    } else {
+      // Check if button has been pressed long enough
+      if (current_time - upper_button_pressed_time >= ENDSTOP_DEBOUNCE_DELAY) {
+        if (!upper_endstop_hit) { // Process only if not already considered hit
+          Debug.println("Debounced: Upper Endstop HIT!");
+          upper_endstop_hit = true;
+          emergency_stop = true;
+          stepper.setCurrentPosition(stepper.targetPosition()); // Stop motor immediately
+        }
+        upper_button_debouncing = false; // Reset debouncing
+      }
+    }
+  } else {
+    // Button not pressed or not checking, reset debouncing
+    upper_button_debouncing = false;
   }
-}
 
-void IRAM_ATTR lowerEndstopISR() {
-  // Only record the first trigger until debounced
-  if (!lower_endstop_isr_triggered) {
-    lower_endstop_isr_triggered = true;
-    lower_endstop_isr_time = millis();
+  // --- Lower Endstop Processing ---
+  bool check_lower = is_homing || (motor_moving_down && (current_position <= ENDSTOP_ACTIVE_STEPS));
+  
+  if (check_lower && digitalRead(BUTTON_DOWN) == LOW) { // Button pressed (active low)
+    if (!lower_button_debouncing) {
+      // Start debouncing
+      lower_button_debouncing = true;
+      lower_button_pressed_time = current_time;
+    } else {
+      // Check if button has been pressed long enough
+      if (current_time - lower_button_pressed_time >= ENDSTOP_DEBOUNCE_DELAY) {
+        if (!lower_endstop_hit) {
+          Debug.println("Debounced: Lower Endstop HIT!");
+          lower_endstop_hit = true;
+          emergency_stop = true;
+          stepper.setCurrentPosition(stepper.targetPosition());
+        }
+        lower_button_debouncing = false; // Reset debouncing
+      }
+    }
+  } else {
+    // Button not pressed or not checking, reset debouncing
+    lower_button_debouncing = false;
   }
 }
 
@@ -226,43 +267,6 @@ void updateLED() {
   led.update();
 }
 
-/** ENDSTOP DEBOUNCING PROCESSING **/
-void processDebouncedEndstops() {
-  unsigned long current_time = millis();
-
-  // --- Upper Endstop Debouncing ---
-  if (upper_endstop_isr_triggered) {
-    if (current_time - upper_endstop_isr_time >= ENDSTOP_DEBOUNCE_DELAY) {
-      // Check actual pin state after debounce delay
-      //if (digitalRead(BUTTON_UP) == LOW) { // Active low
-        if (!upper_endstop_hit) { // Process only if not already considered hit
-          Debug.println("Debounced: Upper Endstop HIT!");
-          upper_endstop_hit = true; // Set the debounced state
-          emergency_stop = true;    // Trigger emergency stop
-          stepper.setCurrentPosition(stepper.targetPosition());     // Stop motor immediately
-        }
-        upper_endstop_isr_triggered = false;
-      //}
-    }
-  }
-
-  // --- Lower Endstop Debouncing ---
-  if (lower_endstop_isr_triggered) {
-    if (current_time - lower_endstop_isr_time >= ENDSTOP_DEBOUNCE_DELAY) {
-      // Check actual pin state after debounce delay
-      //if (digitalRead(BUTTON_DOWN) == LOW) { // Active low
-        if (!lower_endstop_hit) {
-          Debug.println("Debounced: Lower Endstop HIT!");
-          lower_endstop_hit = true;
-          emergency_stop = true;
-          stepper.setCurrentPosition(stepper.targetPosition());
-        }
-        lower_endstop_isr_triggered = false;
-      //}
-    }
-  }
-}
-
 /** MOTOR CONTROL AND SAFETY FUNCTIONS **/
 bool homeMotor() {
   Debug.println("Starting homing sequence...");
@@ -272,8 +276,8 @@ bool homeMotor() {
   // Reset all endstop states before starting a move
   upper_endstop_hit = false;
   lower_endstop_hit = false;
-  upper_endstop_isr_triggered = false;
-  lower_endstop_isr_triggered = false;
+  upper_button_debouncing = false;
+  lower_button_debouncing = false;
   emergency_stop = false;
   
   // Enable motor
@@ -287,10 +291,10 @@ bool homeMotor() {
   
   unsigned long startTime = millis();
   
-  // Wait for lower_endstop_hit (set by processDebouncedEndstops) or timeout or other emergency
+  // Wait for lower_endstop_hit or timeout or other emergency
   while (!lower_endstop_hit && (millis() - startTime) < HOMING_TIMEOUT && !emergency_stop) {
     stepper.run();
-    processDebouncedEndstops(); // Check and process endstops frequently
+    processEndstops(true); // Pass true for homing mode
     updateLED();
     yield();
   }
@@ -299,11 +303,10 @@ bool homeMotor() {
   if (!lower_endstop_hit && !emergency_stop) { 
       stepper.stop(); 
   }
-  // If emergency_stop is true, stepper.stop() was already called by processDebouncedEndstops
   
   delay(100); // Allow motor to settle
   
-  if (lower_endstop_hit) { // Check the debounced flag
+  if (lower_endstop_hit) {
     Debug.println("Homing: Lower endstop found and debounced.");
     handleEndstopHit(); // Back off from the endstop, sets position to ENDSTOP_MARGIN
 
@@ -337,8 +340,8 @@ bool safeMoveTo(long targetPosition) {
   }
   
   // Clamp target position to safe range
-  if (targetPosition < ENDSTOP_MARGIN) { // Target is 0 after homing, so allow moving to 0
-    targetPosition = ENDSTOP_MARGIN;     // But general moves should respect margin
+  if (targetPosition < ENDSTOP_MARGIN) {
+    targetPosition = ENDSTOP_MARGIN;
   }
   if (targetPosition > (MAX_STEPS - ENDSTOP_MARGIN)) {
     targetPosition = MAX_STEPS - ENDSTOP_MARGIN;
@@ -347,8 +350,8 @@ bool safeMoveTo(long targetPosition) {
   // Reset all endstop states before starting a move
   upper_endstop_hit = false;
   lower_endstop_hit = false;
-  upper_endstop_isr_triggered = false;
-  lower_endstop_isr_triggered = false;
+  upper_button_debouncing = false;
+  lower_button_debouncing = false;
   emergency_stop = false;
   
   setLEDState(LED_MOTOR_MOVING);
@@ -361,7 +364,7 @@ bool safeMoveTo(long targetPosition) {
   // Run until target reached or emergency stop
   while (stepper.distanceToGo() != 0 && !emergency_stop) {
     stepper.run();
-    processDebouncedEndstops(); // Check and process endstops frequently
+    processEndstops(false); // Use normal mode (not homing)
     updateLED();
     yield();
   }
@@ -369,12 +372,10 @@ bool safeMoveTo(long targetPosition) {
   // If loop exited due to emergency_stop, an endstop was hit and debounced
   if (emergency_stop) {
     Debug.println("safeMoveTo: Emergency stop triggered by endstop.");
-    // stepper.stop() was already called by processDebouncedEndstops
     handleEndstopHit(); // Back off from the endstop, updates position
     current_step = stepper.currentPosition(); // Update current_step after backoff
     stepper.disableOutputs();
-    // emergency_stop remains true, signaling failure of this move
-    setLEDState(LED_ERROR); // Or IDLE if error is handled and cleared
+    setLEDState(LED_ERROR);
     return false; // Movement failed
   }
   
@@ -392,22 +393,16 @@ bool safeMoveSteps(long steps) {
 }
 
 void handleEndstopHit() {
-  // Motor is already stopped by processDebouncedEndstops.
-  // This function's job is to back off and update position.
   Debug.println("handleEndstopHit: Processing debounced endstop.");
   stepper.enableOutputs(); // Ensure motor is enabled for backing off
 
   if (upper_endstop_hit) {
     Debug.println("handleEndstopHit: Upper endstop - backing away.");
-    detachInterrupt(digitalPinToInterrupt(BUTTON_UP)); 
 
     stepper.setAcceleration(MAX_SPEED / 2); 
     stepper.move(-ENDSTOP_MARGIN); // Relative move
     unsigned long backoffStartTime = millis();
     while (stepper.distanceToGo() != 0) {
-      // Do not call processDebouncedEndstops here to avoid re-triggering on the same switch
-      // or complex interactions if the OTHER switch is hit during this tiny move.
-      // If the other switch is hit, it's a catastrophic failure anyway.
       stepper.run();
       updateLED(); // Keep LED updated
       yield();
@@ -422,12 +417,10 @@ void handleEndstopHit() {
     Debug.printf("handleEndstopHit: Backed off upper. New pos: %d\n", current_step);
     
     upper_endstop_hit = false; // Clear the state now that we've handled it
-    attachInterrupt(digitalPinToInterrupt(BUTTON_UP), upperEndstopISR, FALLING); 
   }
   
   if (lower_endstop_hit) {
     Debug.println("handleEndstopHit: Lower endstop - backing away.");
-    detachInterrupt(digitalPinToInterrupt(BUTTON_DOWN));
 
     stepper.setAcceleration(HOMING_SPEED / 2); // Use homing accel for consistency
     stepper.move(ENDSTOP_MARGIN);
@@ -442,16 +435,12 @@ void handleEndstopHit() {
           break;
       }
     }
-    // This position is the safe margin *from* the physical switch.
-    // If this was part of homing, homeMotor() will then call setCurrentPosition(0).
     stepper.setCurrentPosition(ENDSTOP_MARGIN); 
     current_step = stepper.currentPosition();
     Debug.printf("handleEndstopHit: Backed off lower. New pos: %d\n", current_step);
 
     lower_endstop_hit = false; // Clear the state
-    attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), lowerEndstopISR, FALLING);
   }
-  // emergency_stop is NOT cleared here. The calling function (safeMoveTo/homeMotor) decides.
   stepper.disableOutputs(); // Disable motor after backing off
 }
 
@@ -753,10 +742,6 @@ void setup() {
   sensor.read();
   atm_pressure = sensor.pressure(MS5837::Pa);
   Debug.printf("Atmospheric pressure: %.2f Pa\n", atm_pressure);
-
-  delay(100);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_UP), upperEndstopISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), lowerEndstopISR, FALLING);
   
   // Perform motor homing
   Debug.println("Starting motor homing...");
@@ -777,15 +762,13 @@ void setup() {
 void loop() {
   updateLED();
 
-  // Process debounced endstops, especially if motor is idle, to catch unexpected hits.
+  // Process endstops, especially if motor is idle, to catch unexpected hits.
   // Movement functions also call this, but this is a safety net.
   if (stepper.distanceToGo() == 0 && !emergency_stop) { // If motor is supposed to be idle
-      processDebouncedEndstops(); 
+      processEndstops(false); // Normal mode, not homing
       if (emergency_stop) { // An endstop was hit while idle
           Debug.println("Endstop hit while motor was idle!");
           handleEndstopHit(); // Back off
-          // emergency_stop remains true. The system is now in an error state.
-          // The next command or state transition should handle this.
           setLEDState(LED_ERROR); 
       }
   }
@@ -916,12 +899,15 @@ void loop() {
       }
       break;
       
-    case 3: // BALANCE - Move syringes to bottom
+    case 3: // BALANCE - Move syringes top then bottom usefult to fill them up with water
       {
         uint8_t result = send_message(CMD3_ACK, 1000);
         if (result) {
           Debug.println("Executing balance command");
-          safeMoveTo(ENDSTOP_MARGIN); // Move to home position
+          safeMoveTo(MAX_STEPS - ENDSTOP_MARGIN);
+          delay(1000);
+          safeMoveTo(ENDSTOP_MARGIN);
+
         }
         status = 0;
       }
