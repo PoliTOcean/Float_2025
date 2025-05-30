@@ -9,6 +9,7 @@ const uint8_t RGBLed::YELLOW[3] = {255, 255, 0};
 const uint8_t RGBLed::CYAN[3] = {0, 255, 255};
 const uint8_t RGBLed::MAGENTA[3] = {255, 0, 255};
 const uint8_t RGBLed::WHITE[3] = {255, 255, 255};
+const uint8_t RGBLed::ORANGE[3] = {255, 165, 0};
 
 RGBLed::RGBLed(uint8_t redPin, uint8_t greenPin, uint8_t bluePin, CommonType type) {
     _redPin = redPin;

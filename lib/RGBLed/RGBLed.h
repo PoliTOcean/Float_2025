@@ -19,6 +19,7 @@ public:
     static const uint8_t CYAN[3];
     static const uint8_t MAGENTA[3];
     static const uint8_t WHITE[3];
+    static const uint8_t ORANGE[3];
     
     RGBLed(uint8_t redPin, uint8_t greenPin, uint8_t bluePin, CommonType type = COMMON_CATHODE);
     

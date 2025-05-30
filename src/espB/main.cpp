@@ -41,7 +41,7 @@ esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we wa
 
 /** MAC ADDRESSES **/
 // ESP-NOW constant for peer MAC address value. Replace with the MAC address of your receiver (ESPA) 
-uint8_t broadcastAddress[] = {0xE4, 0x65, 0xB8, 0x7E, 0x18, 0xE4};
+uint8_t broadcastAddress[] = {0xE4, 0x65, 0xB8, 0x7E, 0x27, 0xAC};
 
 /** PROGRAM GLOBAL VARIABLES **/
 uint8_t auto_mode_active = 0;     // 1 if AM is active, 0 otherwise

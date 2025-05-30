@@ -210,7 +210,7 @@ void setLEDState(FloatLEDState state) {
       led.flash(RGBLed::WHITE, 500); // White blink
       break;
     case LED_OTA_MODE:
-      led.flash(0x255A00, 500); // Orange blink
+      led.flash(RGBLed::ORANGE, 500); // Orange blink
       break;
   }
 }
@@ -969,8 +969,8 @@ void loop() {
         
         // Format test package with current sensor data
         snprintf(package, OUTPUT_LEN,
-                "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"0\"}",
-                sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH * 10000), f_depth(), sensor.temperature());
+                "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%.2f\"}",
+                sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH * 10000), f_depth(), sensor.temperature(), millis());
         
         send_message(package, 1000); // Send test package (acknowledgment is the package itself)
         
@@ -985,42 +985,108 @@ void loop() {
         if (result) {
           setLEDState(LED_OTA_MODE);
           Debug.println("Starting OTA server...");
+
+          bool original_debug_mode_state = debug_mode_active;
+          if (original_debug_mode_state) {
+            Debug.println("Temporarily disabling remote debug for OTA setup.");
+            debug_mode_active = false; // Disable remote debug to prevent recursion
+          }
+
+          // De-initialize ESP-NOW
+          Serial.println("De-initializing ESP-NOW for OTA (local serial only)..."); // Use Serial directly
+          esp_err_t deinit_status = esp_now_deinit();
+          if (deinit_status == ESP_OK) {
+            Serial.println("ESP-NOW de-initialized successfully (local serial only).");
+          } else {
+            Serial.printf("ESP-NOW de-initialization failed or was not initialized: %s (local serial only)\n", esp_err_to_name(deinit_status));
+          }
+          delay(100); // Allow time for de-initialization to complete
+
+          // Stop WiFi if it was in STA mode for ESP-NOW
+          WiFi.disconnect(true); // Disconnect from any network
+          WiFi.mode(WIFI_OFF);   // Turn off WiFi completely
+          delay(100);            // Allow WiFi to turn off
           
-          // Connect to WiFi
-          WiFi.mode(WIFI_AP_STA);
-          WiFi.begin(SSID, PASSWORD);
-          
-          unsigned long wifi_timeout = millis();
-          while (WiFi.status() != WL_CONNECTED && (millis() - wifi_timeout < 60000)) {
-            updateLED();
-            delay(500);
-            Debug.print(".");
+          // Configure and start Access Point
+          Serial.printf("Setting up AP: %s (local serial only)\n", SSID); // Use Serial directly
+          WiFi.mode(WIFI_AP);
+          if (WiFi.softAP(SSID, PASSWORD)) {
+            Serial.println("Soft AP created successfully (local serial only).");
+          } else {
+            Serial.println("Soft AP creation failed! (local serial only)");
+            // Handle AP creation failure (e.g., return to idle, set error LED)
+            status = 0;
+            setLEDState(LED_ERROR);
+            
+            // Attempt to re-initialize ESP-NOW before breaking
+            Serial.println("Attempting to re-initialize ESP-NOW after AP failure (local serial only)...");
+            WiFi.mode(WIFI_STA); // ESP-NOW requires STA mode
+            delay(100);
+            if (esp_now_init() == ESP_OK) {
+              esp_now_register_send_cb(OnDataSent);
+              esp_now_register_recv_cb(OnDataRecv);
+              esp_now_add_peer(&peerInfo);
+              Serial.println("ESP-NOW re-initialized after AP failure (local serial only).");
+            } else {
+              Serial.println("Failed to re-initialize ESP-NOW after AP failure (local serial only).");
+            }
+            if (original_debug_mode_state) {
+              debug_mode_active = true; // Restore remote debug
+              Debug.println("Remote debug re-enabled after AP failure handling.");
+            }
+            break; // Exit case 7
           }
           
-          if (WiFi.status() == WL_CONNECTED) {
-            Debug.println("\nWiFi connected");
-            Debug.printf("OTA Server: http://%s/update\n", WiFi.localIP().toString().c_str());
+          IPAddress apIP = WiFi.softAPIP();
+          Serial.printf("AP IP address: %s (local serial only)\n", apIP.toString().c_str());
+          Serial.printf("OTA Server: http://%s/update (local serial only)\n", apIP.toString().c_str());
             
-            // Start ElegantOTA
-            ElegantOTA.begin(&server);
-            server.begin();
+          // Start ElegantOTA
+          ElegantOTA.begin(&server); // Pass WebServer instance
+          server.begin();
             
-            // Keep OTA server running for 5 minutes
-            unsigned long ota_start = millis();
-            while (millis() - ota_start < 300000) { // 5 minutes
-              server.handleClient();
-              ElegantOTA.loop();
-              updateLED();
-              delay(10);
-            }
-            
-            // Disconnect WiFi (ElegantOTA doesn't need explicit cleanup)
-            WiFi.disconnect();
+          // Keep OTA server running for 5 minutes
+          unsigned long ota_start_time = millis();
+          Serial.println("OTA server running for 5 minutes (local serial only)...");
+          while (millis() - ota_start_time < 300000) { // 5 minutes
+            server.handleClient();
+            ElegantOTA.loop(); // Process ElegantOTA
+            updateLED(); // updateLED does not use Debug
+            delay(10);
+          }
+          
+          Serial.println("OTA period finished (local serial only).");
+          // Stop server and AP
+          server.stop();
+          WiFi.softAPdisconnect(true);
+          WiFi.mode(WIFI_OFF); // Turn off WiFi before re-initializing ESP-NOW
+          delay(100);
+
+          // Re-initialize ESP-NOW
+          Serial.println("Re-initializing ESP-NOW (local serial only)...");
+          WiFi.mode(WIFI_STA); // ESP-NOW requires STA mode
+          delay(100); // Give WiFi time to switch to STA mode
+          if (esp_now_init() != ESP_OK) {
+            Serial.println("Error re-initializing ESP-NOW (local serial only)");
+            setLEDState(LED_ERROR);
+            // Potentially loop forever or restart
           } else {
-            Debug.println("\nFailed to connect to WiFi for OTA");
+            esp_now_register_send_cb(OnDataSent);
+            esp_now_register_recv_cb(OnDataRecv);
+            if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+              Serial.println("Failed to re-add peer (local serial only)");
+              setLEDState(LED_ERROR);
+            } else {
+              Serial.println("ESP-NOW re-initialized successfully (local serial only).");
+            }
+          }
+          if (original_debug_mode_state) {
+            debug_mode_active = true; // Restore remote debug
+            Debug.println("Remote debug re-enabled after OTA process.");
           }
         }
         status = 0;
+        setLEDState(LED_IDLE); // Return to idle LED state
       }
       break;
       
