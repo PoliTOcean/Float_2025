@@ -46,9 +46,8 @@ const uint16_t MAX_STEPS         = 1700;       // Number of motor steps for full
 const uint32_t MAX_SPEED         = 1200;        // Maximum motor speed in steps/sec
 const uint32_t HOMING_SPEED      = 600;        // Homing speed in steps/sec
 const uint16_t ENDSTOP_MARGIN    = 30;         // Safety margin from endstops in steps
-const uint32_t HOMING_TIMEOUT    = 8000;      // Homing timeout in milliseconds
-const unsigned long ENDSTOP_DEBOUNCE_DELAY = 30; // Debounce delay in milliseconds
-const uint16_t ENDSTOP_ACTIVE_STEPS = 200;    // Only check endstops when motor is within this many steps of them
+const uint32_t HOMING_TIMEOUT    = 5000;      // Homing timeout in milliseconds
+const uint16_t ENDSTOP_ACTIVE_STEPS = 150;    // Only check endstops when motor is within this many steps of them
 
 /** TIMING CONSTANTS **/
 const uint16_t MEAS_PERIOD       = 100;        // Period between measurements in ms
@@ -59,7 +58,7 @@ const uint16_t CONN_CHECK_PERIOD = 500;        // Period between acknowledgement
 float    Kp                = 50.0;       // Proportional gain (increased for underwater response)
 float    Ki                = 2.0;        // Integral gain (for steady-state error)
 float    Kd                = 10.0;       // Derivative gain (for stability)
-const float    PID_OUTPUT_LIMIT  = 30.0;      // Maximum PID output in steps
+const float    PID_OUTPUT_LIMIT  = 50.0;      // Maximum PID output in steps
 const float    PID_INTEGRAL_LIMIT = 10.0;     // Anti-windup limit for integral term
 
 /** FLOAT SPECIFIC CONSTANTS **/
@@ -88,7 +87,6 @@ uint8_t espA_mac[6] = {0x5C, 0x01, 0x3B, 0x2B, 0xA8, 0x00}; // This ESP32 MAC
 uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68}; // ESPB MAC
 
 /** GLOBAL VARIABLES **/
-uint8_t  meas_cnt         = 0;     // Measurement counter
 uint8_t  profile_count    = 0;     // Number of completed profiles
 uint8_t  auto_mode_active = 0;     // Auto mode status
 uint8_t  idle             = 0;  // 1 if in idle phase, 0 otherwise
@@ -100,7 +98,6 @@ uint16_t eeprom_read_ptr  = 0;     // EEPROM read pointer
 uint16_t eeprom_write_ptr = 0;     // EEPROM write pointer
 uint16_t current_step     = 0;     // Current motor position
 uint32_t test_speed       = MAX_SPEED;    // Default test speed in steps/sec
-uint64_t time_ref         = 0;     // Time reference for profiles
 float    atm_pressure     = 0;     // Atmospheric pressure reference
 float    depth            = 0;     // Current depth measurement
 
@@ -130,7 +127,7 @@ FloatLEDState current_led_state = LED_INIT;
 unsigned long led_last_update = 0;
 
 /** DEBUG MODE VARIABLES **/
-bool debug_mode_active = true;
+bool debug_mode_active = false;
 
 /** COMMUNICATION STRUCTURES **/
 input_message  status_to_send;    // Data to send to espB (charge and messages)  
@@ -174,6 +171,7 @@ void processEndstops(bool is_homing) {
   if (check_upper && upper_interrupt_triggered) { // Use interrupt flag instead of digitalRead
     upper_interrupt_triggered = false; // Clear the flag
     if (!upper_endstop_hit) { // Process only if not already considered hit
+      Debug.println("Debounced: Upper Endstop HIT!");
       upper_endstop_hit = true;
       emergency_stop = true;
       stepper.setCurrentPosition(stepper.targetPosition()); // Stop motor immediately
@@ -524,6 +522,10 @@ float f_depth () {
   return depth + FLOAT_LENGTH;                                      // Adds the FLOAT length to the result
 }
 
+float f_depth(float pressure) {
+  return (pressure - atm_pressure) / (997 * 9.80665) + FLOAT_LENGTH;
+}
+
 /** MAIN MEASUREMENT AND CONTROL FUNCTION **/
 void measure(float targetDepth, float time) {
   Debug.printf("Starting measurement: target=%.2f, time=%.2f\n", targetDepth, time);
@@ -581,9 +583,7 @@ void measure(float targetDepth, float time) {
       if (millis() - last_write >= WRITE_PERIOD) {
         // Write sensor data to EEPROM
         sensor_data data;
-        data.mseconds = millis() - start_time;
         data.pressure = sensor.pressure(MS5837::Pa);
-        data.depth = depth;
         data.temperature = sensor.temperature();
         
         // Write to EEPROM (implementation depends on your data format)
@@ -595,7 +595,6 @@ void measure(float targetDepth, float time) {
         EEPROM.commit();
         
         last_write = millis();
-        meas_cnt++;
       }
       
       // Check for depth stability (stationary detection)
@@ -840,11 +839,9 @@ void loop() {
         if (result) {
           setLEDState(LED_PROFILE);
           Debug.println("Starting profile execution");
-          
-          // Reset measurement counter and time reference
-          meas_cnt = 0;
-          time_ref = millis();
-          eeprom_read_ptr = eeprom_write_ptr; // Ensures only data from this profile is sent next
+
+          eeprom_read_ptr = 0; // Ensures only data from this profile are saved and sent
+          eeprom_write_ptr = 0; // Reset write pointer for new profile data
           
           // Execute three-phase depth profile (same as original implementation)
           for (int i = 0; i < 3; i++) {
@@ -881,6 +878,7 @@ void loop() {
       {
         char line[OUTPUT_LEN];
         sensor_data data;
+        uint16_t packet_count = 0;
         
         Debug.println("Sending stored data to Control Station");
         
@@ -892,10 +890,11 @@ void loop() {
           // Format the JSON string
           snprintf(line, OUTPUT_LEN,
                    "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%llu\"}",
-                   data.pressure, data.depth, data.temperature, data.mseconds);
+                   data.pressure, f_depth(data.pressure), data.temperature, packet_count*WRITE_PERIOD);
           
           delay(50); // Slow down sending rate
           send_message(line, 100); // Send data line to CS
+          packet_count++;
         }
         
         strcpy(line, "STOP_DATA");
@@ -978,6 +977,7 @@ void loop() {
         if (result) {
           setLEDState(LED_OTA_MODE);
           Debug.println("Starting OTA server...");
+          Debug.println("Should be at: http://192.168.4.1/update", apIP.toString().c_str());
 
           bool original_debug_mode_state = debug_mode_active;
           if (original_debug_mode_state) {
@@ -986,7 +986,7 @@ void loop() {
           }
 
           // De-initialize ESP-NOW
-          Serial.println("De-initializing ESP-NOW for OTA (local serial only)..."); // Use Serial directly
+          Serial.println("De-initializing ESP-NOW for OTA...");
           esp_err_t deinit_status = esp_now_deinit();
           if (deinit_status == ESP_OK) {
             Serial.println("ESP-NOW de-initialized successfully (local serial only).");
@@ -1001,27 +1001,27 @@ void loop() {
           delay(100);            // Allow WiFi to turn off
           
           // Configure and start Access Point
-          Serial.printf("Setting up AP: %s (local serial only)\n", SSID); // Use Serial directly
+          Serial.printf("Setting up AP: %s\n", SSID); // Use Serial directly
           WiFi.mode(WIFI_AP);
           if (WiFi.softAP(SSID, PASSWORD)) {
-            Serial.println("Soft AP created successfully (local serial only).");
+            Serial.println("Soft AP created successfully");
           } else {
-            Serial.println("Soft AP creation failed! (local serial only)");
+            Serial.println("Soft AP creation failed!");
             // Handle AP creation failure (e.g., return to idle, set error LED)
             status = 0;
             setLEDState(LED_ERROR);
             
             // Attempt to re-initialize ESP-NOW before breaking
-            Serial.println("Attempting to re-initialize ESP-NOW after AP failure (local serial only)...");
+            Serial.println("Attempting to re-initialize ESP-NOW after AP failure");
             WiFi.mode(WIFI_STA); // ESP-NOW requires STA mode
             delay(100);
             if (esp_now_init() == ESP_OK) {
               esp_now_register_send_cb(OnDataSent);
               esp_now_register_recv_cb(OnDataRecv);
               esp_now_add_peer(&peerInfo);
-              Serial.println("ESP-NOW re-initialized after AP failure (local serial only).");
+              Serial.println("ESP-NOW re-initialized after AP failure");
             } else {
-              Serial.println("Failed to re-initialize ESP-NOW after AP failure (local serial only).");
+              Serial.println("Failed to re-initialize ESP-NOW after AP failure");
             }
             if (original_debug_mode_state) {
               debug_mode_active = true; // Restore remote debug
@@ -1031,8 +1031,8 @@ void loop() {
           }
           
           IPAddress apIP = WiFi.softAPIP();
-          Serial.printf("AP IP address: %s (local serial only)\n", apIP.toString().c_str());
-          Serial.printf("OTA Server: http://%s/update (local serial only)\n", apIP.toString().c_str());
+          Serial.printf("AP IP address: %s)\n", apIP.toString().c_str());
+          Serial.printf("OTA Server: http://%s/update\n", apIP.toString().c_str());
             
           // Start ElegantOTA
           ElegantOTA.begin(&server); // Pass WebServer instance
@@ -1040,7 +1040,7 @@ void loop() {
             
           // Keep OTA server running for 5 minutes
           unsigned long ota_start_time = millis();
-          Serial.println("OTA server running for 5 minutes (local serial only)...");
+          Serial.println("OTA server running for 5 minutes...");
           while (millis() - ota_start_time < 300000) { // 5 minutes
             server.handleClient();
             ElegantOTA.loop(); // Process ElegantOTA
@@ -1048,7 +1048,7 @@ void loop() {
             delay(10);
           }
           
-          Serial.println("OTA period finished (local serial only).");
+          Serial.println("OTA period finished");
           // Stop server and AP
           server.stop();
           WiFi.softAPdisconnect(true);

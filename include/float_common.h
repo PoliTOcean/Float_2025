@@ -23,9 +23,7 @@
 
 // Sensor data structure
 typedef struct sensor_data {
-  uint64_t mseconds;
   float pressure;
-  float depth;
   float temperature;
 } sensor_data;
 

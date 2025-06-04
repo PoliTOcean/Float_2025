@@ -16,7 +16,7 @@ void DebugSerial::begin(bool* debug_mode_flag, uint8_t (*send_func)(const char*,
 
 void DebugSerial::print(const char* str) {
   if (debug_mode_ptr && *debug_mode_ptr && send_message_func) {
-    send_message_func(str, 100);
+    send_message_func(str, 50);
   }
   Serial.print(str);
 }
@@ -63,7 +63,7 @@ void DebugSerial::println(const char* str) {
   if (debug_mode_ptr && *debug_mode_ptr && send_message_func) {
     char buffer[DEBUG_OUTPUT_LEN];
     snprintf(buffer, DEBUG_OUTPUT_LEN, "%s\n", str);
-    send_message_func(buffer, 100);
+    send_message_func(buffer, 50);
   }
   Serial.println(str);
 }
@@ -108,7 +108,7 @@ void DebugSerial::println(double value, int digits) {
 
 void DebugSerial::println() {
   if (debug_mode_ptr && *debug_mode_ptr && send_message_func) {
-    send_message_func("\n", 100);
+    send_message_func("\n", 50);
   }
   Serial.println();
 }
