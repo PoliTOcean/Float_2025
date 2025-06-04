@@ -36,13 +36,13 @@ const uint8_t  EN                = 27;         // Active-low pin for motor enabl
 const uint8_t  BUTTON_DOWN       = 16;         // Lower endstop (home position)
 const uint8_t  BUTTON_UP         = 17;         // Upper endstop 
 const uint8_t  R_PIN             = 19;         // Pin of the RED LED
-const uint8_t  G_PIN             = 5;         // Pin of the GREEN LED
-const uint8_t  B_PIN             = 18;          // Pin of the BLUE LED
+const uint8_t  G_PIN             = 18;         // Pin of the GREEN LED
+const uint8_t  B_PIN             = 5;          // Pin of the BLUE LED
 const uint8_t DRV8825_SLEEP = 32;           // Pin for DRV8825 sleep mode
 const uint8_t DRV8825_RST = 35;             // Pin for DRV8825 reset
 
 /** MOTOR AND CONTROL CONSTANTS **/
-const uint16_t MAX_STEPS         = 1800;       // Number of motor steps for full range
+const uint16_t MAX_STEPS         = 1700;       // Number of motor steps for full range
 const uint32_t MAX_SPEED         = 1200;        // Maximum motor speed in steps/sec
 const uint32_t HOMING_SPEED      = 600;        // Homing speed in steps/sec
 const uint16_t ENDSTOP_MARGIN    = 30;         // Safety margin from endstops in steps
@@ -66,9 +66,9 @@ const float    PID_INTEGRAL_LIMIT = 10.0;     // Anti-windup limit for integral 
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles for maximum points
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
-const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    MAX_ERROR         = 0.1;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
-const float    TARGET_DEPTH      = 1.0;        // Target depth to be met and mantained when sinking, expressed in m
+const float    TARGET_DEPTH      = 0.7;        // Target depth to be met and mantained when sinking, expressed in m
 const float    STAT_TIME         = 5;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
 
 /** NETWORK CONSTANTS **/
@@ -111,11 +111,13 @@ bool lower_endstop_hit = false;
 volatile bool emergency_stop = false;
 bool motor_homed = false;
 
+// Add interrupt flags
+volatile bool upper_interrupt_triggered = false;
+volatile bool lower_interrupt_triggered = false;
+
 // Add debouncing variables for polling
 unsigned long upper_button_pressed_time = 0;
 unsigned long lower_button_pressed_time = 0;
-bool upper_button_debouncing = false;
-bool lower_button_debouncing = false;
 
 /** PID CONTROL VARIABLES **/
 float pid_integral = 0.0;
@@ -149,6 +151,15 @@ float f_depth();
 void measure(float targetDepth, float time);
 void processEndstops(bool is_homing);
 
+/** INTERRUPT SERVICE ROUTINES **/
+void IRAM_ATTR upperEndstopISR() {
+  upper_interrupt_triggered = true;
+}
+
+void IRAM_ATTR lowerEndstopISR() {
+  lower_interrupt_triggered = true;
+}
+
 /** ENDSTOP POLLING PROCESSING **/
 void processEndstops(bool is_homing) {
   unsigned long current_time = millis();
@@ -160,51 +171,31 @@ void processEndstops(bool is_homing) {
   // --- Upper Endstop Processing ---
   bool check_upper = motor_moving_up && (current_position >= (MAX_STEPS - ENDSTOP_ACTIVE_STEPS));
   
-  if (check_upper && digitalRead(BUTTON_UP) == LOW) { // Button pressed (active low)
-    if (!upper_button_debouncing) {
-      // Start debouncing
-      upper_button_debouncing = true;
-      upper_button_pressed_time = current_time;
-    } else {
-      // Check if button has been pressed long enough
-      if (current_time - upper_button_pressed_time >= ENDSTOP_DEBOUNCE_DELAY) {
-        if (!upper_endstop_hit) { // Process only if not already considered hit
-          Debug.println("Debounced: Upper Endstop HIT!");
-          upper_endstop_hit = true;
-          emergency_stop = true;
-          stepper.setCurrentPosition(stepper.targetPosition()); // Stop motor immediately
-        }
-        upper_button_debouncing = false; // Reset debouncing
-      }
+  if (check_upper && upper_interrupt_triggered) { // Use interrupt flag instead of digitalRead
+    upper_interrupt_triggered = false; // Clear the flag
+    if (!upper_endstop_hit) { // Process only if not already considered hit
+      upper_endstop_hit = true;
+      emergency_stop = true;
+      stepper.setCurrentPosition(stepper.targetPosition()); // Stop motor immediately
     }
-  } else {
-    // Button not pressed or not checking, reset debouncing
-    upper_button_debouncing = false;
+  } else if (!check_upper || !upper_interrupt_triggered) {
+    upper_interrupt_triggered = false; // Clear flag if not in checking zone
   }
 
   // --- Lower Endstop Processing ---
   bool check_lower = is_homing || (motor_moving_down && (current_position <= ENDSTOP_ACTIVE_STEPS));
   
-  if (check_lower && digitalRead(BUTTON_DOWN) == LOW) { // Button pressed (active low)
-    if (!lower_button_debouncing) {
-      // Start debouncing
-      lower_button_debouncing = true;
-      lower_button_pressed_time = current_time;
-    } else {
-      // Check if button has been pressed long enough
-      if (current_time - lower_button_pressed_time >= ENDSTOP_DEBOUNCE_DELAY) {
-        if (!lower_endstop_hit) {
-          Debug.println("Debounced: Lower Endstop HIT!");
-          lower_endstop_hit = true;
-          emergency_stop = true;
-          stepper.setCurrentPosition(stepper.targetPosition());
-        }
-        lower_button_debouncing = false; // Reset debouncing
-      }
+  if (check_lower && lower_interrupt_triggered) { // Use interrupt flag instead of digitalRead
+    lower_interrupt_triggered = false; // Clear the flag
+    if (!lower_endstop_hit) {
+      Debug.println("Debounced: Lower Endstop HIT!");
+      lower_endstop_hit = true;
+      emergency_stop = true;
+      stepper.setCurrentPosition(stepper.targetPosition());
     }
-  } else {
+  } else if (!check_lower || !lower_interrupt_triggered) {
     // Button not pressed or not checking, reset debouncing
-    lower_button_debouncing = false;
+    lower_interrupt_triggered = false; // Clear flag if not in checking zone
   }
 }
 
@@ -276,8 +267,6 @@ bool homeMotor() {
   // Reset all endstop states before starting a move
   upper_endstop_hit = false;
   lower_endstop_hit = false;
-  upper_button_debouncing = false;
-  lower_button_debouncing = false;
   emergency_stop = false;
   
   // Enable motor
@@ -350,8 +339,6 @@ bool safeMoveTo(long targetPosition) {
   // Reset all endstop states before starting a move
   upper_endstop_hit = false;
   lower_endstop_hit = false;
-  upper_button_debouncing = false;
-  lower_button_debouncing = false;
   emergency_stop = false;
   
   setLEDState(LED_MOTOR_MOVING);
@@ -516,9 +503,25 @@ uint8_t send_message(const char* message, uint32_t timeout) {
   return (send_result == 1) ? 1 : 0;
 }
 
-/** SENSOR FUNCTIONS **/
-float f_depth() {
-  return (sensor.pressure(MS5837::Pa) - atm_pressure) / 9806.65;
+/*
+*********************************************************************************************************
+*                                           f_depth()
+*
+* Description : Utility function that uses Stevino rule to calculate a depth value starting from 
+*               the pressure measured at setup and the last pressure value given by 
+*               the pressure sensor. It also adjusts the depth value by adding the FLOAT
+*               length to it, in order to mock the position of the pressure sensor, which is
+*               at the top of the robot.
+*
+* Argument(s) : none
+*
+* Return(s)   : The depth value calculated, expressed in meters.
+*********************************************************************************************************
+*/
+float f_depth () {
+  depth = (sensor.pressure(MS5837::Pa)-atm_pressure)/(997*9.80665); // Stevino rule to calculate depth. 
+//                                                                     Density: 997Kg/m^3 for fresh water, 1029Kg/m^3 for sea water
+  return depth + FLOAT_LENGTH;                                      // Adds the FLOAT length to the result
 }
 
 /** MAIN MEASUREMENT AND CONTROL FUNCTION **/
@@ -652,9 +655,13 @@ void setup() {
   digitalWrite(DRV8825_RST, HIGH);   // Keep driver out of reset by default
 
   
-  // Initialize endstop pins
+  // Initialize endstop pins with interrupts
   pinMode(BUTTON_UP, INPUT_PULLUP);
   pinMode(BUTTON_DOWN, INPUT_PULLUP);
+  
+  // Attach interrupts for falling edge (button press)
+  attachInterrupt(digitalPinToInterrupt(BUTTON_UP), upperEndstopISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), lowerEndstopISR, FALLING);
   
   // Initialize stepper motor
   stepper.setMaxSpeed(MAX_SPEED);
@@ -877,7 +884,7 @@ void loop() {
         
         Debug.println("Sending stored data to Control Station");
         
-        while (eeprom_read_ptr + sizeof(sensor_data) <= eeprom_write_ptr) {
+        while (eeprom_read_ptr + sizeof(sensor_data) != eeprom_write_ptr) {
           // Read struct from EEPROM
           EEPROM.get(eeprom_read_ptr, data);
           eeprom_read_ptr += sizeof(sensor_data);
@@ -905,7 +912,7 @@ void loop() {
         if (result) {
           Debug.println("Executing balance command");
           safeMoveTo(MAX_STEPS - ENDSTOP_MARGIN);
-          delay(1000);
+          delay(5000);
           safeMoveTo(ENDSTOP_MARGIN);
 
         }
@@ -956,7 +963,7 @@ void loop() {
         // Format test package with current sensor data
         snprintf(package, OUTPUT_LEN,
                 "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%.2f\"}",
-                sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH * 10000), f_depth(), sensor.temperature(), millis());
+                sensor.pressure(MS5837::Pa), f_depth(), sensor.temperature(), millis());
         
         send_message(package, 1000); // Send test package (acknowledgment is the package itself)
         
