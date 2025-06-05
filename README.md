@@ -159,10 +159,9 @@ The FLOAT is equipped with RGB LEDs on both ESP32 boards that provide visual fee
 | **Green Fast Blink** | `LED_IDLE_DATA` | Idle with data ready to send |
 | **Red Solid** | `LED_LOW_BATTERY` | Battery voltage below threshold (11.5V) |
 | **Red Fast Blink** | `LED_ERROR` | Error state or endstop hit |
-| **Blue Blink** | `LED_PROFILE` | Running depth profile |
+| **Blue Solid** | `LED_PROFILE` | Running depth profile |
 | **Yellow Blink** | `LED_AUTO_MODE` | Auto mode active |
 | **Purple Blink** | `LED_HOMING` | Motor homing in progress |
-| **Purple Solid** | `LED_MOTOR_MOVING` | Motor moving to position |
 | **Cyan Blink** | `LED_PID_CONTROL` | PID depth control active |
 | **White Blink** | `LED_COMMUNICATION` | Communicating with ESPB |
 | **Orange Blink** | `LED_OTA_MODE` | OTA update mode active |

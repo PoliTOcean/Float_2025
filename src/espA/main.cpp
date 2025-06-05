@@ -57,8 +57,8 @@ const uint16_t CONN_CHECK_PERIOD = 500;        // Period between acknowledgement
 /** PID CONTROL CONSTANTS **/
 float    Kp                = 50.0;       // Proportional gain (increased for underwater response)
 float    Ki                = 2.0;        // Integral gain (for steady-state error)
-float    Kd                = 10.0;       // Derivative gain (for stability)
-const float    PID_OUTPUT_LIMIT  = 50.0;      // Maximum PID output in steps
+float    Kd                = 40.0;       // Derivative gain (for stability)
+const float    PID_OUTPUT_LIMIT  = 80.0;      // Maximum PID output in steps
 const float    PID_INTEGRAL_LIMIT = 10.0;     // Anti-windup limit for integral term
 
 /** FLOAT SPECIFIC CONSTANTS **/
@@ -222,7 +222,7 @@ void setLEDState(FloatLEDState state) {
       led.flash(RGBLed::RED, 500); // Red fast blink
       break;
     case LED_PROFILE:
-      led.flash(RGBLed::BLUE, 500); // Blue blink
+      led.setColor(RGBLed::BLUE); // Blue solid
       break;
     case LED_AUTO_MODE:
       led.flash(RGBLed::YELLOW, 750); // Yellow blink
@@ -303,7 +303,6 @@ bool homeMotor() {
     emergency_stop = false; // Homing successful, clear emergency for next operations
     
     Debug.println("Homing completed successfully");
-    setLEDState(LED_IDLE);
     stepper.disableOutputs();
     return true;
   } else {
@@ -313,7 +312,6 @@ bool homeMotor() {
         handleEndstopHit(); // Handle the unexpected upper hit (backs off, sets position)
     }
     // emergency_stop remains true if it was set by an endstop
-    setLEDState(LED_ERROR);
     stepper.disableOutputs();
     motor_homed = false;
     return false;
@@ -339,7 +337,6 @@ bool safeMoveTo(long targetPosition) {
   lower_endstop_hit = false;
   emergency_stop = false;
   
-  setLEDState(LED_MOTOR_MOVING);
   stepper.enableOutputs();
   stepper.setMaxSpeed(MAX_SPEED); // Ensure normal operating speed
   stepper.setAcceleration(MAX_SPEED / 2);
@@ -360,7 +357,6 @@ bool safeMoveTo(long targetPosition) {
     handleEndstopHit(); // Back off from the endstop, updates position
     current_step = stepper.currentPosition(); // Update current_step after backoff
     stepper.disableOutputs();
-    setLEDState(LED_ERROR);
     return false; // Movement failed
   }
   
@@ -368,7 +364,6 @@ bool safeMoveTo(long targetPosition) {
   current_step = stepper.currentPosition();
   stepper.disableOutputs();
   Debug.printf("Motor moved to position: %ld\n", current_step);
-  setLEDState(LED_IDLE); 
   return true;
 }
 
@@ -530,15 +525,15 @@ float f_depth(float pressure) {
 void measure(float targetDepth, float time) {
   Debug.printf("Starting measurement: target=%.2f, time=%.2f\n", targetDepth, time);
   
-  if (targetDepth > 0) {
+  if (targetDepth == FLOAT_LENGTH || targetDepth == MAX_TARGET) {
+    setLEDState(LED_PROFILE);
+  } else {
     setLEDState(LED_PID_CONTROL);
     // Reset PID controller
     pid_integral = 0.0;
     pid_last_error = 0.0;
     pid_last_depth = 0.0;
     pid_last_time = millis();
-  } else {
-    setLEDState(LED_PROFILE);
   }
   
   uint64_t start_time = millis();
@@ -556,7 +551,7 @@ void measure(float targetDepth, float time) {
       last_measurement = millis();
       
       // Handle special target cases
-      if (targetDepth == 0 || targetDepth == MAX_TARGET) {
+      if (targetDepth == FLOAT_LENGTH || targetDepth == MAX_TARGET) {
         if (!motor_stopped) {
           if (targetDepth == MAX_TARGET) {
             // Move to maximum depth (full extension)
@@ -601,17 +596,27 @@ void measure(float targetDepth, float time) {
       static float last_depth_check = 0;
       static int stable_count = 0;
 
-      if (targetDepth == 0 || targetDepth == MAX_TARGET) {  // case for surface or max depth
-        if (abs(depth - last_depth_check) < EPSILON) {
+      if (targetDepth == MAX_TARGET) {  // case for max depth
+        if (abs(depth - last_depth_check) < EPSILON && depth>FLOAT_LENGTH+0.1) {
           stable_count++;
           if (stable_count >= (time * 1000 / MEAS_PERIOD)) {
-            Debug.println("Float is stationary - profile complete");
+            Debug.println("Float is stationary at bottom - profile complete");
             break;
           }
         } else {
           stable_count = 0;
         }
-      } else {                                            // case for target depth
+      }
+      else if (targetDepth == FLOAT_LENGTH) {
+        if (abs(depth - targetDepth) < EPSILON) {
+          stable_count++;
+          if (stable_count >= (time * 1000 / MEAS_PERIOD)) {
+            Debug.println("Float is stationary at surface - profile complete");
+            break;
+          }
+        }
+      }
+      else {                                            // case for target depth
         if (abs(depth - targetDepth) < MAX_ERROR) {
           stable_count++;
           if (stable_count >= (time * 1000 / MEAS_PERIOD)) {
@@ -631,7 +636,6 @@ void measure(float targetDepth, float time) {
   // Stop motor and return to idle LED state
   stepper.stop();
   stepper.disableOutputs();
-  setLEDState(LED_IDLE);
   
   Debug.println("Measurement completed");
 }
@@ -761,7 +765,6 @@ void setup() {
   }
   
   Debug.println("Initialization complete - Float ready!");
-  setLEDState(LED_IDLE);
 }
 
 /** MAIN LOOP **/
@@ -837,32 +840,20 @@ void loop() {
         }
         
         if (result) {
-          setLEDState(LED_PROFILE);
           Debug.println("Starting profile execution");
 
           eeprom_read_ptr = 0; // Ensures only data from this profile are saved and sent
           eeprom_write_ptr = 0; // Reset write pointer for new profile data
           
-          // Execute three-phase depth profile (same as original implementation)
-          for (int i = 0; i < 3; i++) {
-            switch (i) {
-              case 0: 
-                Debug.println("Phase 0: Descending to target depth");
-                measure(TARGET_DEPTH, STAT_TIME); 
-                break;
-              case 1: 
-                Debug.println("Phase 1: Descending to maximum depth (pool bottom)");
-                measure(MAX_TARGET, 5); 
-                break;
-              case 2: 
-                Debug.println("Phase 2: Ascending to surface");
-                measure(0, 2); 
-                break;
-              default: 
-                break;
-            }
-            delay(500); // Wait between phases
-          }
+          // Execute three-phase depth profile
+          Debug.println("Phase 0: Descending to target depth");
+          measure(TARGET_DEPTH, STAT_TIME); 
+          delay(500); // Wait between phases
+          Debug.println("Phase 1: Descending to maximum depth (pool bottom)");
+          measure(MAX_TARGET, 5); 
+          delay(500); // Wait between phases
+          Debug.println("Phase 2: Ascending to surface");
+          measure(FLOAT_LENGTH, 6); 
           
           stepper.disableOutputs(); // Disable motor after profile completion
           
@@ -882,14 +873,14 @@ void loop() {
         
         Debug.println("Sending stored data to Control Station");
         
-        while (eeprom_read_ptr + sizeof(sensor_data) != eeprom_write_ptr) {
+        while (eeprom_read_ptr + sizeof(sensor_data) <= eeprom_write_ptr) {
           // Read struct from EEPROM
           EEPROM.get(eeprom_read_ptr, data);
           eeprom_read_ptr += sizeof(sensor_data);
           
           // Format the JSON string
           snprintf(line, OUTPUT_LEN,
-                   "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%llu\"}",
+                   "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%d\"}",
                    data.pressure, f_depth(data.pressure), data.temperature, packet_count*WRITE_PERIOD);
           
           delay(50); // Slow down sending rate
@@ -942,11 +933,8 @@ void loop() {
         if (result) {
           auto_mode_active = !auto_mode_active;
           Debug.printf("Auto mode: %s\n", auto_mode_active ? "ENABLED" : "DISABLED");
-          if (auto_mode_active) {
+          if (auto_mode_active)
             setLEDState(LED_AUTO_MODE);
-          } else {
-            setLEDState(LED_IDLE);
-          }
         }
         status = 0;
       }
@@ -961,7 +949,7 @@ void loop() {
         
         // Format test package with current sensor data
         snprintf(package, OUTPUT_LEN,
-                "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%.2f\"}",
+                "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%d\"}",
                 sensor.pressure(MS5837::Pa), f_depth(), sensor.temperature(), millis());
         
         send_message(package, 1000); // Send test package (acknowledgment is the package itself)
@@ -977,7 +965,7 @@ void loop() {
         if (result) {
           setLEDState(LED_OTA_MODE);
           Debug.println("Starting OTA server...");
-          Debug.println("Should be at: http://192.168.4.1/update", apIP.toString().c_str());
+          Debug.println("Should be at: http://192.168.4.1/update");
 
           bool original_debug_mode_state = debug_mode_active;
           if (original_debug_mode_state) {
@@ -1079,7 +1067,6 @@ void loop() {
           }
         }
         status = 0;
-        setLEDState(LED_IDLE); // Return to idle LED state
       }
       break;
       
