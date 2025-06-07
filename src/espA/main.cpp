@@ -18,12 +18,13 @@
 #include <Arduino.h>
 #include <float_common.h>
 #include <MS5837.h>            // Library for pressure sensor (Bar02) control over I2C
-#include <esp_now.h>           // Esp_now library for WiFi connections establishing and management
+// #include <esp_now.h>           // Esp_now library for WiFi connections establishing and management - REMOVED
 #include <WiFi.h>              // Layer for proper initialization and setting of ESP32 WiFi module
+#include <WiFiClient.h>        // For TCP client handling
 #include <Wire.h>              // Library for I2C connection protocol interface
 #include <EEPROM.h>            // Library for EEPROM read/write operations
 #include <ElegantOTA.h>        // OTA firmware updating (new library)
-#include <WebServer.h>         // Web server for OTA
+#include <WebServer.h>         // Web server for OTA (ElegantOTA uses this)
 #include <INA.h>               // Library for programming of the INA220 current and voltage monitor
 #include <AccelStepper.h>      // Advanced stepper motor control
 #include <RGBLed.h>            // RGB LED control library
@@ -51,48 +52,54 @@ const uint16_t ENDSTOP_ACTIVE_STEPS = 150;    // Only check endstops when motor 
 
 /** TIMING CONSTANTS **/
 const uint16_t MEAS_PERIOD       = 100;        // Period between measurements in ms
-const uint16_t WRITE_PERIOD      = 5000;       // Period between EEPROM writes in ms
-const uint16_t CONN_CHECK_PERIOD = 500;        // Period between acknowledgements in ms
+const uint16_t WRITE_PERIOD      = 2000;       // Period between EEPROM writes in ms
+// const uint16_t CONN_CHECK_PERIOD = 500;        // Period between acknowledgements in ms - REPURPOSED for status send
+const uint16_t STATUS_SEND_PERIOD = 2000;      // Period for sending status in idle mode
+const uint16_t CLIENT_TIMEOUT_FOR_AUTO_MODE = 10000; // ms to wait before auto mode if client disconnects
 
 /** PID CONTROL CONSTANTS **/
-float    Kp                = 50.0;       // Proportional gain (increased for underwater response)
-float    Ki                = 2.0;        // Integral gain (for steady-state error)
-float    Kd                = 40.0;       // Derivative gain (for stability)
+float    Kp                = 10.0;       // Proportional gain (increased for underwater response)
+float    Ki                = 0.0;        // Integral gain (for steady-state error)
+float    Kd                = 250.0;       // Derivative gain (for stability)
 const float    PID_OUTPUT_LIMIT  = 80.0;      // Maximum PID output in steps
-const float    PID_INTEGRAL_LIMIT = 10.0;     // Anti-windup limit for integral term
+const float    PID_INTEGRAL_LIMIT = 5.0;     // Anti-windup limit for integral term
 
 /** FLOAT SPECIFIC CONSTANTS **/
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles for maximum points
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
-const float    MAX_ERROR         = 0.1;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    MAX_ERROR         = 0.4;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
-const float    TARGET_DEPTH      = 0.7;        // Target depth to be met and mantained when sinking, expressed in m
-const float    STAT_TIME         = 5;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
+const float    TARGET_DEPTH      = 2.00;        // Target depth to be met and mantained when sinking, expressed in m
+const float    STAT_TIME         = 50;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
+const float    MAX_PID_TIME      = 120;          
 
 /** NETWORK CONSTANTS **/
-const char*    SSID              = "PIPO";     // OTA WiFi network name
-const char*    PASSWORD          = "politocean"; // OTA WiFi password
+const char*    SSID              = "FLOAT_AP";     // ESP_A WiFi network name
+const char*    PASSWORD          = "politocean"; // ESP_A WiFi password
+const uint16_t TCP_PORT          = 8888;         // Port for TCP server
 
 /** GLOBAL OBJECTS **/
 INA_Class           INA;           // Current/voltage monitor
 MS5837              sensor;        // Pressure sensor
-esp_now_peer_info_t peerInfo;      // ESP-NOW peer info
-WebServer           server(80);    // Web server for OTA
+// esp_now_peer_info_t peerInfo;      // ESP-NOW peer info - REMOVED
+WebServer           http_server(80);    // Web server for OTA (used by ElegantOTA)
+WiFiServer          tcpServer(TCP_PORT); // TCP server for commands
+WiFiClient          tcpClient;           // Current connected TCP client
 AccelStepper        stepper(AccelStepper::DRIVER, STEP, DIR); // Stepper motor controller
 RGBLed              led(R_PIN, G_PIN, B_PIN, RGBLed::COMMON_CATHODE); // RGB LED controller
 
 /** MAC ADDRESSES **/
-uint8_t espA_mac[6] = {0x5C, 0x01, 0x3B, 0x2B, 0xA8, 0x00}; // This ESP32 MAC
-uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68}; // ESPB MAC
+// uint8_t espA_mac[6] = {0x5C, 0x01, 0x3B, 0x2B, 0xA8, 0x00}; // This ESP32 MAC - Informational
+// uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68}; // ESPB MAC - REMOVED
 
 /** GLOBAL VARIABLES **/
 uint8_t  profile_count    = 0;     // Number of completed profiles
 uint8_t  auto_mode_active = 0;     // Auto mode status
-uint8_t  idle             = 0;  // 1 if in idle phase, 0 otherwise
+// uint8_t  idle             = 0;  // 1 if in idle phase, 0 otherwise - Less relevant, managed by client connection
 uint8_t  auto_committed   = 0;     // Auto mode commit flag
 uint8_t  deviceNumber     = -1;    // INA220 device number
-int8_t   send_result      = -1;    // Message sending result
+// int8_t   send_result      = -1;    // Message sending result - REMOVED (TCP has different semantics)
 int8_t   status           = 0;     // Main state machine status
 uint16_t eeprom_read_ptr  = 0;     // EEPROM read pointer
 uint16_t eeprom_write_ptr = 0;     // EEPROM write pointer
@@ -100,6 +107,7 @@ uint16_t current_step     = 0;     // Current motor position
 uint32_t test_speed       = MAX_SPEED;    // Default test speed in steps/sec
 float    atm_pressure     = 0;     // Atmospheric pressure reference
 float    depth            = 0;     // Current depth measurement
+unsigned long client_last_seen_time = 0; // For auto mode trigger on disconnect
 
 /** ENDSTOP AND SAFETY VARIABLES **/
 // Remove all ISR-related variables
@@ -130,12 +138,16 @@ unsigned long led_last_update = 0;
 bool debug_mode_active = false;
 
 /** COMMUNICATION STRUCTURES **/
-input_message  status_to_send;    // Data to send to espB (charge and messages)  
-output_message command_received;  // Commands received from espB
+// input_message  status_to_send;    // Data to send to espB (charge and messages) - Will send strings directly
+// output_message command_received;  // Commands received from espB - Will parse from TCP strings
+
+// Use output_message struct for holding parsed command parameters
+output_message command_params; // Stores parameters for commands like PARAMS, TEST_FREQ, TEST_STEPS
+
 
 /** FUNCTION DECLARATIONS **/
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len);
+// void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status); // REMOVED
+// void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len); // REMOVED
 void setLEDState(FloatLEDState state);
 void updateLED();
 bool homeMotor();
@@ -143,10 +155,11 @@ bool safeMoveTo(long targetPosition);
 bool safeMoveSteps(long steps);
 float calculatePID(float targetDepth, float currentDepth);
 void handleEndstopHit();
-uint8_t send_message(const char* message, uint32_t timeout);
+uint8_t send_message(const char* message, uint32_t timeout_ms); // Timeout less relevant for TCP stream
 float f_depth();
 void measure(float targetDepth, float time);
 void processEndstops(bool is_homing);
+void parseCommand(String cmd_str); // New function for parsing TCP commands
 
 /** INTERRUPT SERVICE ROUTINES **/
 void IRAM_ATTR upperEndstopISR() {
@@ -247,10 +260,13 @@ void setLEDState(FloatLEDState state) {
 
 void updateLED() {
   // Handle battery status override
-  if (status_to_send.charge < BATT_THRESH && current_led_state != LED_LOW_BATTERY) {
-    setLEDState(LED_LOW_BATTERY);
-    return;
-  }
+  // Read battery charge for LED update if needed (original code had status_to_send.charge)
+  // For simplicity, let's assume battery check for LED is handled if status_to_send.charge is updated elsewhere
+  // or we read it here if critical.
+  // if (INA.getBusMilliVolts(deviceNumber) < BATT_THRESH && current_led_state != LED_LOW_BATTERY) {
+  //   setLEDState(LED_LOW_BATTERY);
+  //   return;
+  // }
   
   // Update LED animation
   led.update();
@@ -356,13 +372,13 @@ bool safeMoveTo(long targetPosition) {
     Debug.println("safeMoveTo: Emergency stop triggered by endstop.");
     handleEndstopHit(); // Back off from the endstop, updates position
     current_step = stepper.currentPosition(); // Update current_step after backoff
-    stepper.disableOutputs();
+    // stepper.disableOutputs();
     return false; // Movement failed
   }
   
   // If loop exited because distanceToGo is 0 (successful move)
   current_step = stepper.currentPosition();
-  stepper.disableOutputs();
+  // stepper.disableOutputs();
   Debug.printf("Motor moved to position: %ld\n", current_step);
   return true;
 }
@@ -421,7 +437,7 @@ void handleEndstopHit() {
 
     lower_endstop_hit = false; // Clear the state
   }
-  stepper.disableOutputs(); // Disable motor after backing off
+  // stepper.disableOutputs(); // Disable motor after backing off
 }
 
 /** IMPROVED PID CONTROL **/
@@ -467,33 +483,22 @@ float calculatePID(float targetDepth, float currentDepth) {
 }
 
 /** COMMUNICATION FUNCTIONS **/
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  send_result = (status == ESP_NOW_SEND_SUCCESS) ? 1 : 0;
-}
+// void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) { // REMOVED
+//   send_result = (status == ESP_NOW_SEND_SUCCESS) ? 1 : 0;
+// }
 
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  memcpy(&command_received, incomingData, sizeof(command_received));
-}
+// void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) { // REMOVED
+//   memcpy(&command_received, incomingData, sizeof(command_received));
+// }
 
-uint8_t send_message(const char* message, uint32_t timeout) {
-  strcpy(status_to_send.message, message);
-  
-  send_result = -1;
-  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &status_to_send, sizeof(status_to_send));
-  
-  if (result != ESP_OK) {
-    Debug.println("Error sending message");
-    return 0;
+uint8_t send_message(const char* message, uint32_t timeout_ms) {
+  // timeout_ms is largely ignored for TCP stream, but kept for compatibility with DebugSerial
+  if (tcpClient && tcpClient.connected()) {
+    tcpClient.println(message);
+    // Serial.printf("TCP SENT: %s\n", message); // Optional: for local debugging
+    return 1; // Success
   }
-  
-  // Wait for send confirmation
-  unsigned long startTime = millis();
-  while (send_result == -1 && (millis() - startTime) < timeout) {
-    delay(10);
-    updateLED();
-  }
-  
-  return (send_result == 1) ? 1 : 0;
+  return 0; // Failure (no client or not connected)
 }
 
 /*
@@ -519,6 +524,67 @@ float f_depth () {
 
 float f_depth(float pressure) {
   return (pressure - atm_pressure) / (997 * 9.80665) + FLOAT_LENGTH;
+}
+
+/** PARSE COMMAND FUNCTION **/
+void parseCommand(String cmd_str) {
+    cmd_str.trim();
+    Debug.printf("Received command: %s\n", cmd_str.c_str());
+
+    // Reset previous command parameters
+    memset(&command_params, 0, sizeof(command_params));
+    int new_status = 0; // Default to idle if command is not recognized
+
+    if (cmd_str.equalsIgnoreCase("GO")) new_status = 1;
+    else if (cmd_str.equalsIgnoreCase("SEND_DATA")) new_status = 2;
+    else if (cmd_str.equalsIgnoreCase("BALANCE")) new_status = 3;
+    else if (cmd_str.equalsIgnoreCase("CLEAR_EEPROM")) new_status = 4;
+    else if (cmd_str.equalsIgnoreCase("SWITCH_AUTO_MODE")) new_status = 5;
+    else if (cmd_str.equalsIgnoreCase("SEND_PACKAGE")) new_status = 6;
+    else if (cmd_str.equalsIgnoreCase("OTA_UPDATE")) new_status = 7;
+    else if (cmd_str.startsWith("PARAMS")) {
+        new_status = 8;
+        // sscanf is safer with C-strings
+        int parsed_count = sscanf(cmd_str.c_str(), "PARAMS %f %f %f", &command_params.params[0], &command_params.params[1], &command_params.params[2]);
+        if (parsed_count != 3) {
+            Debug.println("Invalid PARAMS format. Expected: PARAMS Kp Ki Kd");
+            new_status = 0; // Revert to idle on parse error
+        }
+    } else if (cmd_str.startsWith("TEST_FREQ")) {
+        new_status = 9;
+        int parsed_count = sscanf(cmd_str.c_str(), "TEST_FREQ %u", &command_params.freq);
+        if (parsed_count != 1) {
+            Debug.println("Invalid TEST_FREQ format. Expected: TEST_FREQ value");
+            new_status = 0;
+        }
+    } else if (cmd_str.startsWith("TEST_STEPS")) {
+        new_status = 10;
+        int parsed_count = sscanf(cmd_str.c_str(), "TEST_STEPS %ld", &command_params.steps);
+         if (parsed_count != 1) {
+            Debug.println("Invalid TEST_STEPS format. Expected: TEST_STEPS value");
+            new_status = 0;
+        }
+    } else if (cmd_str.equalsIgnoreCase("DEBUG_MODE")) new_status = 11;
+    else if (cmd_str.equalsIgnoreCase("HOME")) new_status = 12;
+    else if (cmd_str.equalsIgnoreCase("STATUS_REQ")) {
+        // Client requests status. Idle loop (status 0) sends it periodically.
+        // We can force an immediate send if needed, or just let idle loop handle it.
+        // For now, this command just ensures we stay/go to idle.
+        new_status = 0; 
+    }
+    else {
+        Debug.printf("Unknown command: %s\n", cmd_str.c_str());
+        new_status = 0; // Go to idle
+    }
+    
+    if (new_status != 0) { // If a valid command is to be processed
+        status = new_status;
+        auto_committed = 0; // Reset auto_committed flag for new commands from client
+        setLEDState(LED_COMMUNICATION); // Indicate command processing
+    } else if (status != 0 && new_status == 0) { // If command was invalid or STATUS_REQ, go to idle
+        status = 0;
+    }
+    // If status was already 0 and new_status is 0, it remains 0.
 }
 
 /** MAIN MEASUREMENT AND CONTROL FUNCTION **/
@@ -580,6 +646,8 @@ void measure(float targetDepth, float time) {
         sensor_data data;
         data.pressure = sensor.pressure(MS5837::Pa);
         data.temperature = sensor.temperature();
+        if (targetDepth != MAX_TARGET && targetDepth != FLOAT_LENGTH)
+          data.temperature = 100;
         
         // Write to EEPROM (implementation depends on your data format)
         EEPROM.put(eeprom_write_ptr, data);
@@ -627,6 +695,8 @@ void measure(float targetDepth, float time) {
       }
 
       last_depth_check = depth;
+      if (millis()-start_time > MAX_PID_TIME*1000)  //timeout
+        break; 
     }
     
     // Allow other tasks to run
@@ -682,34 +752,38 @@ void setup() {
   eeprom_write_ptr = 0;
   eeprom_read_ptr = 0;
   
-  // Initialize WiFi for ESP-NOW
-  WiFi.mode(WIFI_STA);
-  Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
+  // Initialize WiFi for AP and TCP Server
+  Serial.printf("Setting up AP: %s\n", SSID);
+  WiFi.softAP(SSID, PASSWORD);
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.printf("AP IP address: %s\n", apIP.toString().c_str());
+  Serial.printf("TCP Server started on port %d\n", TCP_PORT);
+  tcpServer.begin();
   
-  // Initialize ESP-NOW
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
-    setLEDState(LED_ERROR);
-    while(1) delay(1000);
-  }
+  // Initialize ESP-NOW - REMOVED
+  // if (esp_now_init() != ESP_OK) {
+  //   Serial.println("Error initializing ESP-NOW");
+  //   setLEDState(LED_ERROR);
+  //   while(1) delay(1000);
+  // }
   
-  esp_now_register_send_cb(OnDataSent);
-  esp_now_register_recv_cb(OnDataRecv);
+  // esp_now_register_send_cb(OnDataSent); // REMOVED
+  // esp_now_register_recv_cb(OnDataRecv); // REMOVED
   
-  // Add peer
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
+  // Add peer - REMOVED
+  // memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  // peerInfo.channel = 0;
+  // peerInfo.encrypt = false;
   
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Failed to add peer");
-    setLEDState(LED_ERROR);
-    while(1) delay(1000);
-  }
+  // if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+  //   Serial.println("Failed to add peer");
+  //   setLEDState(LED_ERROR);
+  //   while(1) delay(1000);
+  // }
 
   // Initialize DebugSerial library
-  Debug.begin(&debug_mode_active, send_message);
-  Debug.println("Debug serial initialized - ready for remote debugging");
+  Debug.begin(&debug_mode_active, send_message); // Pass the new TCP send_message
+  Debug.println("Debug serial initialized - ready for remote debugging over TCP");
   
   // Initialize I2C and find INA220
   Wire.begin();
@@ -769,6 +843,54 @@ void setup() {
 
 /** MAIN LOOP **/
 void loop() {
+  // Handle ElegantOTA client connections if OTA is active.
+  // Case 7's loop will call http_server.handleClient() and ElegantOTA.loop().
+  // So, no need for ElegantOTA.loop() here at the top level of the main loop.
+
+  // Handle TCP Client Connection & Data
+  if (!tcpClient || !tcpClient.connected()) {
+    WiFiClient newClient = tcpServer.available();
+    if (newClient) {
+      if (tcpClient) {
+        Debug.println("Old client disconnected.");
+        tcpClient.stop();
+      }
+      tcpClient = newClient;
+      Debug.printf("New client connected from: %s\n", tcpClient.remoteIP().toString().c_str());
+      client_last_seen_time = millis(); // Update last seen time
+      // status = 0; // Ensure idle state on new connection if not already
+    }
+  }
+
+  if (tcpClient && tcpClient.connected()) {
+    client_last_seen_time = millis(); // Update last seen time while client is connected
+    if (tcpClient.available() > 0) {
+      String command_str = tcpClient.readStringUntil('\n');
+      if (command_str.length() > 0) {
+        parseCommand(command_str); // This updates global 'status'
+      }
+    }
+  } else { // No client or client disconnected
+    if (status != 0 && status != 7) { // If not idle or in OTA mode
+        // Debug.println("Client disconnected, returning to idle.");
+    }
+    // status = 0; // Go to idle if client disconnects (handled by auto mode check too)
+    // command_params.command = 0; // Clear any pending command
+
+    // Auto mode activation on prolonged client disconnection
+    if (auto_mode_active && profile_count < MAX_PROFILES && status == 0) { // Only if idle
+        if (millis() - client_last_seen_time > CLIENT_TIMEOUT_FOR_AUTO_MODE) {
+            Debug.println("Client disconnected for too long - activating auto mode");
+            status = 1; // Go to profile execution
+            auto_committed = 1; // Mark as auto-triggered
+            // client_last_seen_time = millis(); // Reset timer or handle state change
+        }
+    }
+    if (status == 0 && !auto_committed) { // If truly idle and not about to run auto_mode
+         // setLEDState(LED_ERROR); // Indicate connection issue if desired, or specific "disconnected" LED
+    }
+  }
+  
   updateLED();
 
   // Process endstops, especially if motor is idle, to catch unexpected hits.
@@ -785,88 +907,86 @@ void loop() {
   switch (status) {
     case 0: // Idle
       {
-        uint8_t result;
-        auto_committed = 0;
+        static unsigned long last_status_send_time = 0;
+        // uint8_t result; // Not used in the same way
+        // auto_committed = 0; // Reset if entering idle, unless set by auto mode trigger
         
-        // Read battery charge
-        INA.waitForConversion(deviceNumber);
-        status_to_send.charge = INA.getBusMilliVolts(deviceNumber);
-        
-        if (!idle) command_received.command = 0;
-        
-        // Send appropriate acknowledgment
-        if (eeprom_write_ptr > eeprom_read_ptr) {
-          setLEDState(LED_IDLE_DATA);
-          result = send_message(IDLE_W_DATA_ACK, 5000);
+        if (tcpClient && tcpClient.connected()) {
+            if (millis() - last_status_send_time > STATUS_SEND_PERIOD) {
+                INA.waitForConversion(deviceNumber);
+                uint16_t current_charge = INA.getBusMilliVolts(deviceNumber);
+                
+                char status_msg[128];
+                const char* auto_status_str = auto_mode_active ? "ON" : "OFF";
+                const char* data_status_str = (eeprom_write_ptr > eeprom_read_ptr) ? "IDLE_W_DATA" : "IDLE";
+
+                if (eeprom_write_ptr > eeprom_read_ptr) {
+                    setLEDState(LED_IDLE_DATA);
+                } else {
+                    setLEDState(LED_IDLE);
+                }
+                sprintf(status_msg, "STATUS:%s|CHARGE:%u|AUTO:%s|PROFILE_COUNT:%d", 
+                        data_status_str, current_charge, auto_status_str, profile_count);
+                send_message(status_msg, 0);
+                last_status_send_time = millis();
+            }
         } else {
-          setLEDState(LED_IDLE);
-          result = send_message(IDLE_ACK, 5000);
+            // If no client, LED might indicate error or waiting state
+            // Auto mode is handled outside the switch if client is disconnected
+            if (!auto_mode_active || profile_count >= MAX_PROFILES) { // If auto mode cannot run
+                 setLEDState(LED_ERROR); // e.g. Red blink for no client and no auto mode
+            } else if (auto_mode_active && status == 0) { // Eligible for auto mode but not yet triggered
+                 setLEDState(LED_AUTO_MODE); // Blinking yellow waiting for timeout
+            }
         }
-        
-        if (result) {
-          idle = 1;
-          uint64_t prec_time = millis();
-          
-          // Wait for command or timeout
-          while ((millis() - prec_time < CONN_CHECK_PERIOD) && command_received.command == 0) {
-            updateLED();
-            delay(10);
-          }
-          
-          status = command_received.command;
-          if (status != 0) {
-            idle = 0;
-            setLEDState(LED_COMMUNICATION);
-          }
-        } else if (profile_count < MAX_PROFILES && auto_mode_active) {
-          // Auto mode activation
-          setLEDState(LED_AUTO_MODE);
-          Serial.println("Communication failed - activating auto mode");
-          status = 1; // Go to profile execution
-          auto_committed = 1;
-        }
+        // If a command is received via TCP, parseCommand will change 'status'
+        // and the loop will break out of case 0 in the next iteration.
       }
       break;
       
     case 1: // GO - Execute profile
       {
-        uint8_t result;
+        // uint8_t result; // Not used for TCP ACK in the same way
         
         if (auto_committed) {
           setLEDState(LED_AUTO_MODE);
-          result = 1; // Auto mode doesn't need acknowledgment
+          Debug.println("Auto mode: Starting profile execution");
+          // result = 1; // Auto mode doesn't need acknowledgment from a client
         } else {
-          result = send_message(CMD1_ACK, 1000);
+          send_message("ACK:GO_RECEIVED", 0); // Send ACK to client
+          // result = 1; // Assume client got it if send_message succeeded (client connected)
         }
         
-        if (result) {
-          Debug.println("Starting profile execution");
+        // if (result) { // Assuming command should proceed
+        Debug.println("Starting profile execution");
 
-          eeprom_read_ptr = 0; // Ensures only data from this profile are saved and sent
-          eeprom_write_ptr = 0; // Reset write pointer for new profile data
-          
-          // Execute three-phase depth profile
-          Debug.println("Phase 0: Descending to target depth");
-          measure(TARGET_DEPTH, STAT_TIME); 
-          delay(500); // Wait between phases
-          Debug.println("Phase 1: Descending to maximum depth (pool bottom)");
-          measure(MAX_TARGET, 5); 
-          delay(500); // Wait between phases
-          Debug.println("Phase 2: Ascending to surface");
-          measure(FLOAT_LENGTH, 6); 
-          
-          stepper.disableOutputs(); // Disable motor after profile completion
-          
-          profile_count++;
-          Debug.printf("Profile %d completed\n", profile_count);
-        }
+        eeprom_read_ptr = 0; 
+        eeprom_write_ptr = 0; 
+        
+        Debug.println("Phase 0: Descending to target depth");
+        measure(TARGET_DEPTH, STAT_TIME); 
+        delay(500); 
+        Debug.println("Phase 1: Descending to maximum depth (pool bottom)");
+        measure(MAX_TARGET, 3); 
+        delay(500); 
+        Debug.println("Phase 2: Ascending to surface");
+        measure(FLOAT_LENGTH, 3); 
+        
+        stepper.disableOutputs(); 
+        
+        profile_count++;
+        Debug.printf("Profile %d completed\n", profile_count);
+        send_message("INFO:PROFILE_COMPLETE", 0);
+        // }
         
         status = 0; // Return to idle
+        auto_committed = 0; // Reset auto_committed after profile execution
       }
       break;
       
     case 2: // SEND_DATA - Send stored sensor data to Control Station
       {
+        send_message("ACK:SEND_DATA_RECEIVED", 0);
         char line[OUTPUT_LEN];
         sensor_data data;
         uint16_t packet_count = 0;
@@ -884,12 +1004,12 @@ void loop() {
                    data.pressure, f_depth(data.pressure), data.temperature, packet_count*WRITE_PERIOD);
           
           delay(50); // Slow down sending rate
-          send_message(line, 100); // Send data line to CS
+          send_message(line, 0); // Send data line to CS
           packet_count++;
         }
         
-        strcpy(line, "STOP_DATA");
-        send_message(line, 100); // Signal end of data transmission
+        // strcpy(line, "STOP_DATA"); // Use send_message directly
+        send_message("INFO:STOP_DATA_TRANSMISSION", 0); // Signal end of data transmission
         
         Debug.println("Data transmission completed");
         status = 0; // Return to idle
@@ -898,50 +1018,59 @@ void loop() {
       
     case 3: // BALANCE - Move syringes top then bottom usefult to fill them up with water
       {
-        uint8_t result = send_message(CMD3_ACK, 1000);
-        if (result) {
-          Debug.println("Executing balance command");
-          safeMoveTo(MAX_STEPS - ENDSTOP_MARGIN);
-          delay(5000);
-          safeMoveTo(ENDSTOP_MARGIN);
+        send_message("ACK:BALANCE_RECEIVED",0);
+        // uint8_t result = send_message(CMD3_ACK, 1000);
+        // if (result) {
+        Debug.println("Executing balance command");
+        safeMoveTo(MAX_STEPS - ENDSTOP_MARGIN);
+        delay(5000);
+        safeMoveTo(ENDSTOP_MARGIN);
 
-        }
+        // }
         status = 0;
       }
       break;
       
-    case 4: // CLEAR_SD - Clear EEPROM data
+    case 4: // CLEAR_EEPROM - Clear EEPROM data (renamed from CLEAR_SD)
       {
-        uint8_t result = send_message(CMD4_ACK, 1000);
-        if (result) {
-          Debug.println("Clearing EEPROM data");
-          eeprom_write_ptr = 0;
-          eeprom_read_ptr = 0;
-          // Clear first few bytes to mark as empty
-          for (int i = 0; i < 100; i++) {
-            EEPROM.write(i, 0);
-          }
-          EEPROM.commit();
+        send_message("ACK:CLEAR_EEPROM_RECEIVED", 0);
+        // uint8_t result = send_message(CMD4_ACK, 1000);
+        // if (result) {
+        Debug.println("Clearing EEPROM data");
+        eeprom_write_ptr = 0;
+        eeprom_read_ptr = 0;
+        // Clear first few bytes to mark as empty
+        for (int i = 0; i < 100; i++) {
+          EEPROM.write(i, 0);
         }
+        EEPROM.commit();
+        // }
         status = 0;
       }
       break;
       
     case 5: // SWITCH_AUTO_MODE - Toggle auto mode
       {
-        uint8_t result = send_message(CMD5_ACK, 1000);
-        if (result) {
-          auto_mode_active = !auto_mode_active;
-          Debug.printf("Auto mode: %s\n", auto_mode_active ? "ENABLED" : "DISABLED");
-          if (auto_mode_active)
+        send_message("ACK:SWITCH_AUTO_MODE_RECEIVED", 0);
+        // uint8_t result = send_message(CMD5_ACK, 1000);
+        // if (result) {
+        auto_mode_active = !auto_mode_active;
+        Debug.printf("Auto mode: %s\n", auto_mode_active ? "ENABLED" : "DISABLED");
+        char auto_msg[50];
+        sprintf(auto_msg, "INFO:AUTO_MODE_%s", auto_mode_active ? "ENABLED" : "DISABLED");
+        send_message(auto_msg, 0);
+        if (auto_mode_active)
             setLEDState(LED_AUTO_MODE);
-        }
+        else
+            setLEDState(LED_IDLE); // Or current appropriate state
+        // }
         status = 0;
       }
       break;
       
     case 6: // SEND_PACKAGE - Send single test packet
       {
+        send_message("ACK:SEND_PACKAGE_RECEIVED", 0);
         char package[OUTPUT_LEN];
         
         Debug.println("Sending test package");
@@ -952,187 +1081,163 @@ void loop() {
                 "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%d\"}",
                 sensor.pressure(MS5837::Pa), f_depth(), sensor.temperature(), millis());
         
-        send_message(package, 1000); // Send test package (acknowledgment is the package itself)
+        send_message(package, 0); // Send test package (acknowledgment is the package itself)
         
         Debug.println("Test package sent");
         status = 0;
       }
       break;
       
-    case 7: // TRY_UPLOAD - Start OTA server
+    case 7: // OTA_UPDATE - Start OTA server (renamed from TRY_UPLOAD)
       {
-        uint8_t result = send_message(CMD7_ACK, 1000);
-        if (result) {
-          setLEDState(LED_OTA_MODE);
-          Debug.println("Starting OTA server...");
-          Debug.println("Should be at: http://192.168.4.1/update");
+        send_message("ACK:OTA_UPDATE_RECEIVED", 0);
+        // uint8_t result = send_message(CMD7_ACK, 1000);
+        // if (result) {
+        setLEDState(LED_OTA_MODE);
+        Debug.println("Starting OTA server...");
+        Debug.printf("OTA Server: http://%s/update\n", WiFi.softAPIP().toString().c_str());
 
-          bool original_debug_mode_state = debug_mode_active;
-          if (original_debug_mode_state) {
-            Debug.println("Temporarily disabling remote debug for OTA setup.");
-            debug_mode_active = false; // Disable remote debug to prevent recursion
-          }
-
-          // De-initialize ESP-NOW
-          Serial.println("De-initializing ESP-NOW for OTA...");
-          esp_err_t deinit_status = esp_now_deinit();
-          if (deinit_status == ESP_OK) {
-            Serial.println("ESP-NOW de-initialized successfully (local serial only).");
-          } else {
-            Serial.printf("ESP-NOW de-initialization failed or was not initialized: %s (local serial only)\n", esp_err_to_name(deinit_status));
-          }
-          delay(100); // Allow time for de-initialization to complete
-
-          // Stop WiFi if it was in STA mode for ESP-NOW
-          WiFi.disconnect(true); // Disconnect from any network
-          WiFi.mode(WIFI_OFF);   // Turn off WiFi completely
-          delay(100);            // Allow WiFi to turn off
-          
-          // Configure and start Access Point
-          Serial.printf("Setting up AP: %s\n", SSID); // Use Serial directly
-          WiFi.mode(WIFI_AP);
-          if (WiFi.softAP(SSID, PASSWORD)) {
-            Serial.println("Soft AP created successfully");
-          } else {
-            Serial.println("Soft AP creation failed!");
-            // Handle AP creation failure (e.g., return to idle, set error LED)
-            status = 0;
-            setLEDState(LED_ERROR);
-            
-            // Attempt to re-initialize ESP-NOW before breaking
-            Serial.println("Attempting to re-initialize ESP-NOW after AP failure");
-            WiFi.mode(WIFI_STA); // ESP-NOW requires STA mode
-            delay(100);
-            if (esp_now_init() == ESP_OK) {
-              esp_now_register_send_cb(OnDataSent);
-              esp_now_register_recv_cb(OnDataRecv);
-              esp_now_add_peer(&peerInfo);
-              Serial.println("ESP-NOW re-initialized after AP failure");
-            } else {
-              Serial.println("Failed to re-initialize ESP-NOW after AP failure");
-            }
-            if (original_debug_mode_state) {
-              debug_mode_active = true; // Restore remote debug
-              Debug.println("Remote debug re-enabled after AP failure handling.");
-            }
-            break; // Exit case 7
-          }
-          
-          IPAddress apIP = WiFi.softAPIP();
-          Serial.printf("AP IP address: %s)\n", apIP.toString().c_str());
-          Serial.printf("OTA Server: http://%s/update\n", apIP.toString().c_str());
-            
-          // Start ElegantOTA
-          ElegantOTA.begin(&server); // Pass WebServer instance
-          server.begin();
-            
-          // Keep OTA server running for 5 minutes
-          unsigned long ota_start_time = millis();
-          Serial.println("OTA server running for 5 minutes...");
-          while (millis() - ota_start_time < 300000) { // 5 minutes
-            server.handleClient();
-            ElegantOTA.loop(); // Process ElegantOTA
-            updateLED(); // updateLED does not use Debug
-            delay(10);
-          }
-          
-          Serial.println("OTA period finished");
-          // Stop server and AP
-          server.stop();
-          WiFi.softAPdisconnect(true);
-          WiFi.mode(WIFI_OFF); // Turn off WiFi before re-initializing ESP-NOW
-          delay(100);
-
-          // Re-initialize ESP-NOW
-          Serial.println("Re-initializing ESP-NOW (local serial only)...");
-          WiFi.mode(WIFI_STA); // ESP-NOW requires STA mode
-          delay(100); // Give WiFi time to switch to STA mode
-          if (esp_now_init() != ESP_OK) {
-            Serial.println("Error re-initializing ESP-NOW (local serial only)");
-            setLEDState(LED_ERROR);
-            // Potentially loop forever or restart
-          } else {
-            esp_now_register_send_cb(OnDataSent);
-            esp_now_register_recv_cb(OnDataRecv);
-            if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-              Serial.println("Failed to re-add peer (local serial only)");
-              setLEDState(LED_ERROR);
-            } else {
-              Serial.println("ESP-NOW re-initialized successfully (local serial only).");
-            }
-          }
-          if (original_debug_mode_state) {
-            debug_mode_active = true; // Restore remote debug
-            Debug.println("Remote debug re-enabled after OTA process.");
-          }
+        bool original_debug_mode_state = debug_mode_active;
+        if (original_debug_mode_state) {
+            Debug.println("Temporarily disabling remote debug for OTA.");
+            debug_mode_active = false; 
         }
+
+        // ESP-NOW de-init and WiFi mode changes for ESP-NOW are removed.
+        // The AP is already running. ElegantOTA will use it.
+        
+        // Start ElegantOTA
+        ElegantOTA.begin(&http_server); // Pass WebServer instance
+        http_server.begin();
+            
+        unsigned long ota_start_time = millis();
+        Debug.println("OTA server running for 5 minutes...");
+        send_message("INFO:OTA_SERVER_RUNNING_5_MIN",0);
+
+        while (millis() - ota_start_time < 300000) { // 5 minutes
+            http_server.handleClient(); // Handle HTTP requests for OTA
+            ElegantOTA.loop();      // Process ElegantOTA
+            updateLED();            // Keep LED status updated
+            delay(10);
+        }
+          
+        Debug.println("OTA period finished");
+        send_message("INFO:OTA_PERIOD_FINISHED",0);
+        http_server.stop();
+        // WiFi AP remains active for the TCP client. No need to disconnect/reconnect AP.
+
+        // ESP-NOW re-initialization is removed.
+        if (original_debug_mode_state) {
+            debug_mode_active = true; 
+            Debug.println("Remote debug re-enabled after OTA process.");
+        }
+        setLEDState(LED_IDLE); // Or appropriate state
+        // }
         status = 0;
       }
       break;
       
     case 8: // UPDATE_PID - Update PID parameters
       {
-        uint8_t result = send_message(CMD8_ACK, 1000);
-        if (result) {
-          // Update PID parameters from received command
-          Kp = command_received.params[0];
-          Ki = command_received.params[1]; 
-          Kd = command_received.params[2];
+        send_message("ACK:PARAMS_RECEIVED", 0);
+        // uint8_t result = send_message(CMD8_ACK, 1000);
+        // if (result) {
+        // Update PID parameters from received command_params
+        Kp = command_params.params[0];
+        Ki = command_params.params[1]; 
+        Kd = command_params.params[2];
           
-          Debug.printf("PID parameters updated: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp, Ki, Kd);
-        }
+        Debug.printf("PID parameters updated: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp, Ki, Kd);
+        char pid_msg[100];
+        sprintf(pid_msg, "INFO:PID_UPDATED Kp=%.2f Ki=%.2f Kd=%.2f", Kp, Ki, Kd);
+        send_message(pid_msg, 0);
+        // }
         status = 0;
       }
       break;
       
     case 9: // TEST_FREQ - Set test frequency
       {
-        uint8_t result = send_message(CMD9_ACK, 1000);
-        if (result) {
-          // Limit frequency to safe range
-          if (command_received.freq > 1200) command_received.freq = 1200;
-          if (command_received.freq < 10) command_received.freq = 10;
-          test_speed = command_received.freq;
-          Debug.printf("Test frequency set to: %d Hz\n", test_speed);
-        }
+        send_message("ACK:TEST_FREQ_RECEIVED", 0);
+        // uint8_t result = send_message(CMD9_ACK, 1000);
+        // if (result) {
+        // Limit frequency to safe range
+        if (command_params.freq > 1200) command_params.freq = 1200;
+        if (command_params.freq < 10) command_params.freq = 10;
+        test_speed = command_params.freq;
+        Debug.printf("Test frequency set to: %u Hz\n", test_speed); // %u for uint32_t
+        char freq_msg[50];
+        sprintf(freq_msg, "INFO:TEST_FREQ_SET %u", test_speed);
+        send_message(freq_msg, 0);
+        // }
         status = 0;
       }
       break;
       
     case 10: // TEST_STEPS - Execute test movement
       {
-        uint8_t result = send_message(CMD10_ACK, 1000);
-        if (result) {
-          Debug.printf("Executing test movement: %ld steps\n", command_received.steps);
+        send_message("ACK:TEST_STEPS_RECEIVED", 0);
+        // uint8_t result = send_message(CMD10_ACK, 1000);
+        // if (result) {
+        Debug.printf("Executing test movement: %ld steps\n", command_params.steps);
           
-          // Set motor speed based on test frequency
-          stepper.setMaxSpeed(test_speed);
-          
-          if (safeMoveSteps(command_received.steps)) {
-            Debug.printf("Test movement completed. Current position: %d\n", current_step);
-          } else {
-            Debug.println("Test movement failed - endstop hit or error");
-          }
-          
-          // Restore normal motor speed
-          stepper.setMaxSpeed(MAX_SPEED);
+        // Set motor speed based on test frequency
+        stepper.setMaxSpeed(test_speed);
+        
+        stepper.enableOutputs();
+        stepper.setAcceleration(test_speed / 2);
+        stepper.move(command_params.steps);
+        
+        Debug.printf("Moving to %ld\n", command_params.steps);
+        // Run until target reached or emergency stop
+        while (stepper.distanceToGo() != 0) {
+          stepper.run();
+          //processEndstops(false); // Use normal mode (not homing)
+          updateLED();
+          yield();
         }
+
+        stepper.disableOutputs();
+        
+        // Restore normal motor speed
+        stepper.setMaxSpeed(MAX_SPEED);
+        // }
         status = 0;
       }
       break;
       
     case 11: // DEBUG_MODE - Toggle debug mode (send serial output over ESP-NOW)
       {
-        uint8_t result = send_message(CMD11_ACK, 1000);
-        if (result) {
-          debug_mode_active = !debug_mode_active;
-          if (debug_mode_active) {
-            Debug.println("DEBUG MODE ACTIVATED - Serial output will be forwarded over ESP-NOW");
-            Debug.println("DEBUG: Remote serial output active");
-          } else {
-            Debug.println("DEBUG MODE DEACTIVATED - Serial output local only");
-          }
+        send_message("ACK:DEBUG_MODE_RECEIVED", 0);
+        // uint8_t result = send_message(CMD11_ACK, 1000);
+        // if (result) {
+        debug_mode_active = !debug_mode_active;
+        if (debug_mode_active) {
+            Debug.println("DEBUG MODE ACTIVATED - Serial output will be forwarded over TCP");
+            send_message("INFO:DEBUG_MODE_ACTIVATED",0);
+        } else {
+            // Debug.println("DEBUG MODE DEACTIVATED - Serial output local only"); // This would be sent via TCP if still active
+            send_message("INFO:DEBUG_MODE_DEACTIVATED",0); // Send this before disabling
+            Serial.println("DEBUG MODE DEACTIVATED - Serial output local only"); // Local confirmation
         }
+        // }
+        status = 0;
+      }
+      break;
+      
+    case 12: // HOME - Manual homing command
+      {
+        send_message("ACK:HOME_RECEIVED", 0);
+        Debug.println("Manual homing requested");
+        
+        if (homeMotor()) {
+          Debug.println("Manual homing completed successfully");
+          send_message("INFO:HOMING_SUCCESS", 0);
+        } else {
+          Debug.println("Manual homing failed");
+          send_message("ERROR:HOMING_FAILED", 0);
+        }
+        
         status = 0;
       }
       break;
