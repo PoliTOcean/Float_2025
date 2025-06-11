@@ -5,8 +5,8 @@
 
 // Communication protocol defines
 #define OUTPUT_LEN      250-sizeof(uint16_t) // Length of the output on the MAC layer
-#define EEPROM_SIZE     4096                 // EEPROM allocation size in bytes
-#define BATT_THRESH     11500                // Battery threshold in mV for low battery warning
+#define EEPROM_SIZE     512                 // EEPROM allocation size in bytes
+#define BATT_THRESH     12000                // Battery threshold in mV for low battery warning
 
 // List of messages for the ESPA acknowledgements: CS has to be aware of these 
 #define IDLE_ACK        "FLOAT_IDLE"        
@@ -20,6 +20,7 @@
 #define CMD9_ACK        "TEST_FREQ_RECVD"
 #define CMD10_ACK       "TEST_STEPS_RECVD"
 #define CMD11_ACK       "DEBUG_MODE_RECVD"
+#define CMD12_ACK       "HOME_RECVD"
 
 // Sensor data structure
 typedef struct sensor_data {
@@ -48,7 +49,7 @@ extern uint8_t espB_mac[6];
 // LED States for better status indication
 enum FloatLEDState {
   LED_OFF,
-  LED_INIT,           // Green blink - Initializing
+  LED_INIT,           // Green solid - Initializing
   LED_IDLE,           // Green solid - Ready/Idle
   LED_IDLE_DATA,      // Green fast blink - Idle with data
   LED_LOW_BATTERY,    // Red solid - Low battery

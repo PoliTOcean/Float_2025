@@ -26,6 +26,7 @@
 #include <Arduino.h>
 #include <float_common.h>  // Shared definitions with espA
 #include <esp_now.h>       // ESP-NOW library for WiFi communication
+#include <esp_wifi.h>
 #include <WiFi.h>          // Layer for proper initialization and setting of ESP32 WiFi module
 #include <Wire.h>          // Library for I2C connection protocol interface
 
@@ -41,7 +42,7 @@ esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we wa
 
 /** MAC ADDRESSES **/
 // ESP-NOW constant for peer MAC address value. Replace with the MAC address of your receiver (ESPA) 
-uint8_t broadcastAddress[] = {0xEC, 0xE3, 0x34, 0xDB, 0xF6, 0x68};
+uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68};
 
 /** PROGRAM GLOBAL VARIABLES **/
 uint8_t auto_mode_active = 0;     // 1 if AM is active, 0 otherwise
@@ -51,10 +52,28 @@ int8_t  send_result      = -1;    // Flag for sending-over-MAC logic, needed to 
 int8_t  status           = 0;     // State variable that is updated according to arriving messages and is used to feedback the CS when requested
 char    serialInput[BUFFER_SIZE]; // Serial software buffer used to empty the hardware one as soon as a new command arrives
 uint16_t battery_charge  = 0;     // FLOAT battery charge, updated at last acknowledgement
+int last_rssi = 0;             // Last message RSSI in dBm
 
 /** LED STATE MANAGEMENT **/
 FloatLEDState current_led_state = LED_INIT;
 unsigned long led_last_update = 0;
+
+
+/** RSSI STRUCTURES **/
+typedef struct {
+  unsigned frame_ctrl: 16;
+  unsigned duration_id: 16;
+  uint8_t addr1[6]; /* receiver address */
+  uint8_t addr2[6]; /* sender address */
+  uint8_t addr3[6]; /* filtering address */
+  unsigned sequence_ctrl: 16;
+  uint8_t addr4[6]; /* optional */
+} wifi_ieee80211_mac_hdr_t;
+
+typedef struct {
+  wifi_ieee80211_mac_hdr_t hdr;
+  uint8_t payload[0]; /* network data ended with 4 bytes csum (CRC32) */
+} wifi_ieee80211_packet_t;
 
 /** COMMUNICATION STRUCTURES **/
 output_message output; // Message to send to espA
@@ -84,27 +103,9 @@ void updateLED() {
       digitalWrite(BUILTIN_LED_PIN, LOW);
       break;
       
-    case LED_INIT:
-      // Slow blink during initialization (1 second on/off)
-      if ((currentTime - led_last_update) % 2000 < 1000) {
-        digitalWrite(BUILTIN_LED_PIN, HIGH);
-      } else {
-        digitalWrite(BUILTIN_LED_PIN, LOW);
-      }
-      break;
-      
     case LED_IDLE:
       // Solid on when idle and connected
       digitalWrite(BUILTIN_LED_PIN, HIGH);
-      break;
-      
-    case LED_COMMUNICATION:
-      // Fast blink during communication (200ms on/off)
-      if ((currentTime - led_last_update) % 400 < 200) {
-        digitalWrite(BUILTIN_LED_PIN, HIGH);
-      } else {
-        digitalWrite(BUILTIN_LED_PIN, LOW);
-      }
       break;
       
     case LED_ERROR:
@@ -116,21 +117,23 @@ void updateLED() {
       }
       break;
       
-    case LED_LOW_BATTERY: {
-      // Triple blink pattern for low battery (on-off-on-off-on-off-long pause)
-      unsigned long cycle = (currentTime - led_last_update) % 2000;
-      if ((cycle < 200) || (cycle >= 300 && cycle < 500) || (cycle >= 600 && cycle < 800)) {
-        digitalWrite(BUILTIN_LED_PIN, HIGH);
-      } else {
-        digitalWrite(BUILTIN_LED_PIN, LOW);
-      }
-      break;
-    }
-      
     default:
       digitalWrite(BUILTIN_LED_PIN, LOW);
       break;
   }
+}
+
+void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
+  // All espnow traffic uses action frames which are a subtype of the mgmnt frames so filter out everything else.
+  if (type != WIFI_PKT_MGMT)
+    return;
+
+  const wifi_promiscuous_pkt_t *ppkt = (wifi_promiscuous_pkt_t *)buf;
+  const wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t *)ppkt->payload;
+  const wifi_ieee80211_mac_hdr_t *hdr = &ipkt->hdr;
+
+  int rssi = ppkt->rx_ctrl.rssi;
+  last_rssi = rssi;
 }
 
 /*
@@ -154,9 +157,6 @@ void OnDataRecv(const uint8_t * mac, const uint8_t * incomingData, int len) {
     message_rdy = 1;
     memcpy(&input.charge, incomingData, sizeof(input.charge));
     memcpy(&input.message, incomingData + sizeof(input.charge), sizeof(input.message));
-    
-    // Indicate communication activity
-    setLEDState(LED_COMMUNICATION);
   }
 }
 
@@ -202,8 +202,6 @@ void OnDataSent(const uint8_t * mac, esp_now_send_status_t status) {
 uint8_t send_command(uint8_t cmd_code, uint16_t max_conn_time) {
   output.command = cmd_code;                                             // Command code is copied in the output data struct
   uint64_t prec_time = millis();                                         // A time reference (ms elapsed from startup) is stored in prec_time
-  
-  setLEDState(LED_COMMUNICATION); // Indicate communication attempt
   
   while (true) {                                                         // [* sending sequence start]
     send_result = -1;                                                    // send_result flag is cleared
@@ -263,13 +261,11 @@ void setup() {
   
   // Initialize built-in LED
   pinMode(BUILTIN_LED_PIN, OUTPUT);
-  setLEDState(LED_INIT);
   
   WiFi.mode(WIFI_STA);                                                 // Sets device as a Wi-Fi Station
 
   if (esp_now_init() != ESP_OK) {                                      // Inits esp_now
     Serial.println("Error initializing ESP-NOW");
-    setLEDState(LED_ERROR);
     return;
   }
 
@@ -277,6 +273,9 @@ void setup() {
   
   esp_now_register_recv_cb(OnDataRecv);                                // Registers esp_now arrival callback
   esp_now_register_send_cb(OnDataSent);                                // Registers esp_now sending callback
+
+  esp_wifi_set_promiscuous(true);                                      // Enables reading RSSI values from incoming packets
+  esp_wifi_set_promiscuous_rx_cb(&promiscuous_rx_cb);
   
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);                     // Registers peer by passing peer object pointer
   peerInfo.channel = 0;                                                // Channel selection
@@ -284,7 +283,6 @@ void setup() {
   
   if (esp_now_add_peer(&peerInfo) != ESP_OK){                          // Adds peer
     Serial.println("Failed to add peer");
-    setLEDState(LED_ERROR);
     return;
   }
   
@@ -308,24 +306,12 @@ void loop() {
     }   //                                                                                     for real time feedback to the CS                                                          
     
     battery_charge = input.charge;                                                          // Update charge value 
-    
-    // Check for low battery and update LED accordingly
-    if (battery_charge < BATT_THRESH) {
-      setLEDState(LED_LOW_BATTERY);
-    } else if (current_led_state == LED_LOW_BATTERY) {
-      setLEDState(LED_IDLE); // Return to normal state if battery recovered
-    }
 
     if (strcmp(input.message, CMD5_ACK) == 0) {                                            // If AM toggle command succeeded,
       auto_mode_active = !auto_mode_active;                                                // toggles flag for feedback purposes
     }
     
     message_rdy = 0;                                                                       // Releases the lock on the message container
-    
-    // Return to idle state after processing message
-    if (current_led_state == LED_COMMUNICATION && battery_charge >= BATT_THRESH) {
-      setLEDState(LED_IDLE);
-    }
   }
 
   if (serial_rdy) {                            // Checks if there's any command ready to be consumed 
@@ -358,6 +344,7 @@ void loop() {
     else if (strcmp(serialInput, "SEND_PACKAGE"     ) == 0) send_command(6, MAX_CONN_TIME);
     else if (strcmp(serialInput, "TRY_UPLOAD"       ) == 0) send_command(7, MAX_CONN_TIME);
     else if (strcmp(serialInput, "DEBUG"            ) == 0) send_command(11, MAX_CONN_TIME);
+    else if (strcmp(serialInput, "HOME_MOTOR"       ) == 0) send_command(12, MAX_CONN_TIME);
     else if (strcmp(serialInput, "STATUS"           ) == 0) {
       uint8_t result;
       // status driven switch that sends a status string to the CS if requested
@@ -388,7 +375,10 @@ void loop() {
       else        Serial.print("CONN_LOST");
       Serial.print(" | ");
       Serial.print("BATTERY: ");
-      Serial.println(battery_charge);
+      Serial.print(battery_charge);
+      Serial.print(" | ");
+      Serial.print("RSSI: ");
+      Serial.println(last_rssi);
     }
 
     serial_rdy = 0;                            // Releases the lock on the command container

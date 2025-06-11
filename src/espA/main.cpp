@@ -43,8 +43,8 @@ const uint8_t DRV8825_RST = 35;             // Pin for DRV8825 reset
 
 /** MOTOR AND CONTROL CONSTANTS **/
 const uint16_t MAX_STEPS         = 1700;       // Number of motor steps for full range
-const uint32_t MAX_SPEED         = 1200;        // Maximum motor speed in steps/sec
-const uint32_t HOMING_SPEED      = 600;        // Homing speed in steps/sec
+const uint32_t MAX_SPEED         = 200;        // Maximum motor speed in steps/sec
+const uint32_t HOMING_SPEED      = 300;        // Homing speed in steps/sec
 const uint16_t ENDSTOP_MARGIN    = 30;         // Safety margin from endstops in steps
 const uint32_t HOMING_TIMEOUT    = 5000;      // Homing timeout in milliseconds
 const uint16_t ENDSTOP_ACTIVE_STEPS = 150;    // Only check endstops when motor is within this many steps of them
@@ -55,20 +55,22 @@ const uint16_t WRITE_PERIOD      = 5000;       // Period between EEPROM writes i
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between acknowledgements in ms
 
 /** PID CONTROL CONSTANTS **/
-float    Kp                = 50.0;       // Proportional gain (increased for underwater response)
-float    Ki                = 2.0;        // Integral gain (for steady-state error)
-float    Kd                = 40.0;       // Derivative gain (for stability)
+float    Kp                = 10.0;       // Proportional gain (increased for underwater response)
+float    Ki                = 0.0;        // Integral gain (for steady-state error)
+float    Kd                = 300.0;       // Derivative gain (for stability)
 const float    PID_OUTPUT_LIMIT  = 80.0;      // Maximum PID output in steps
-const float    PID_INTEGRAL_LIMIT = 10.0;     // Anti-windup limit for integral term
+const float    PID_INTEGRAL_LIMIT = 5.0;     // Anti-windup limit for integral term
 
 /** FLOAT SPECIFIC CONSTANTS **/
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles for maximum points
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
-const float    MAX_ERROR         = 0.1;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    MAX_ERROR         = 0.45;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
-const float    TARGET_DEPTH      = 0.7;        // Target depth to be met and mantained when sinking, expressed in m
-const float    STAT_TIME         = 5;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
+const float    TARGET_DEPTH      = 2.50;        // Target depth to be met and mantained when sinking, expressed in m
+const float    STAT_TIME         = 45;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
+const float    TIMEOUT_PID_TIME  = 180;        // Maximum time for PID to reach target in seconds
+const float    TIMEOUT_TIME      = 30;        // Maximum time for float to reach the target
 
 /** NETWORK CONSTANTS **/
 const char*    SSID              = "PIPO";     // OTA WiFi network name
@@ -78,13 +80,13 @@ const char*    PASSWORD          = "politocean"; // OTA WiFi password
 INA_Class           INA;           // Current/voltage monitor
 MS5837              sensor;        // Pressure sensor
 esp_now_peer_info_t peerInfo;      // ESP-NOW peer info
-WebServer           server(80);    // Web server for OTA
+WebServer           http_server(80);    // Web server for OTA
 AccelStepper        stepper(AccelStepper::DRIVER, STEP, DIR); // Stepper motor controller
 RGBLed              led(R_PIN, G_PIN, B_PIN, RGBLed::COMMON_CATHODE); // RGB LED controller
 
 /** MAC ADDRESSES **/
-uint8_t espA_mac[6] = {0x5C, 0x01, 0x3B, 0x2B, 0xA8, 0x00}; // This ESP32 MAC
-uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68}; // ESPB MAC
+uint8_t espA_mac[6] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68}; // This ESP32 MAC
+uint8_t broadcastAddress[] = {0xEC, 0xE3, 0x34, 0x66, 0xE1, 0x20}; // ESPB MAC
 
 /** GLOBAL VARIABLES **/
 uint8_t  profile_count    = 0;     // Number of completed profiles
@@ -123,7 +125,7 @@ float pid_last_depth = 0.0;
 unsigned long pid_last_time = 0;
 
 /** LED STATE MANAGEMENT **/
-FloatLEDState current_led_state = LED_INIT;
+FloatLEDState current_led_state = LED_OFF;
 unsigned long led_last_update = 0;
 
 /** DEBUG MODE VARIABLES **/
@@ -145,7 +147,7 @@ float calculatePID(float targetDepth, float currentDepth);
 void handleEndstopHit();
 uint8_t send_message(const char* message, uint32_t timeout);
 float f_depth();
-void measure(float targetDepth, float time);
+void measure(float targetDepth, float time, float timeout);
 void processEndstops(bool is_homing);
 
 /** INTERRUPT SERVICE ROUTINES **/
@@ -237,7 +239,7 @@ void setLEDState(FloatLEDState state) {
       led.flash(RGBLed::CYAN, 600); // Cyan blink
       break;
     case LED_COMMUNICATION:
-      led.flash(RGBLed::WHITE, 500); // White blink
+      led.setColor(RGBLed::WHITE); // White solid
       break;
     case LED_OTA_MODE:
       led.flash(RGBLed::ORANGE, 500); // Orange blink
@@ -270,7 +272,7 @@ bool homeMotor() {
   // Enable motor
   stepper.enableOutputs();
   stepper.setMaxSpeed(HOMING_SPEED);
-  stepper.setAcceleration(HOMING_SPEED / 2);
+  stepper.setAcceleration(HOMING_SPEED);
   
   // Move towards lower endstop (home position)
   Debug.println("Homing: Moving towards lower endstop...");
@@ -339,7 +341,7 @@ bool safeMoveTo(long targetPosition) {
   
   stepper.enableOutputs();
   stepper.setMaxSpeed(MAX_SPEED); // Ensure normal operating speed
-  stepper.setAcceleration(MAX_SPEED / 2);
+  stepper.setAcceleration(MAX_SPEED);
   stepper.moveTo(targetPosition);
   
   Debug.printf("safeMoveTo: Moving to %ld\n", targetPosition);
@@ -379,7 +381,7 @@ void handleEndstopHit() {
   if (upper_endstop_hit) {
     Debug.println("handleEndstopHit: Upper endstop - backing away.");
 
-    stepper.setAcceleration(MAX_SPEED / 2); 
+    stepper.setAcceleration(MAX_SPEED); 
     stepper.move(-ENDSTOP_MARGIN); // Relative move
     unsigned long backoffStartTime = millis();
     while (stepper.distanceToGo() != 0) {
@@ -402,7 +404,7 @@ void handleEndstopHit() {
   if (lower_endstop_hit) {
     Debug.println("handleEndstopHit: Lower endstop - backing away.");
 
-    stepper.setAcceleration(HOMING_SPEED / 2); // Use homing accel for consistency
+    stepper.setAcceleration(HOMING_SPEED); // Use homing accel for consistency
     stepper.move(ENDSTOP_MARGIN);
     unsigned long backoffStartTime = millis();
     while (stepper.distanceToGo() != 0) {
@@ -522,7 +524,7 @@ float f_depth(float pressure) {
 }
 
 /** MAIN MEASUREMENT AND CONTROL FUNCTION **/
-void measure(float targetDepth, float time) {
+void measure(float targetDepth, float time, float timeout) {
   Debug.printf("Starting measurement: target=%.2f, time=%.2f\n", targetDepth, time);
   
   if (targetDepth == FLOAT_LENGTH || targetDepth == MAX_TARGET) {
@@ -534,12 +536,16 @@ void measure(float targetDepth, float time) {
     pid_last_error = 0.0;
     pid_last_depth = 0.0;
     pid_last_time = millis();
+
+    safeMoveTo(500); // Move a little before starting PID control, this will accellerate the descent
   }
   
   uint64_t start_time = millis();
   uint64_t last_measurement = 0;
   uint64_t last_write = 0;
   bool motor_stopped = false;
+  float last_depth_check = 0;
+  int stable_count = 0;
   
   while (true) {
     updateLED();
@@ -580,6 +586,16 @@ void measure(float targetDepth, float time) {
         sensor_data data;
         data.pressure = sensor.pressure(MS5837::Pa);
         data.temperature = sensor.temperature();
+        if (targetDepth != MAX_TARGET && targetDepth != FLOAT_LENGTH){  //doing PID control
+          data.temperature = 100; // Mark PID control points
+          if (abs(depth - targetDepth) < MAX_ERROR) {
+          stable_count++;
+          if (stable_count >= ((time * 1000 / WRITE_PERIOD) + 1)) {
+            Debug.println("Profile at target depth complete");
+            break;
+          }
+        }
+        }
         
         // Write to EEPROM (implementation depends on your data format)
         EEPROM.put(eeprom_write_ptr, data);
@@ -588,13 +604,8 @@ void measure(float targetDepth, float time) {
           eeprom_write_ptr = 0; // Wrap around
         }
         EEPROM.commit();
-        
         last_write = millis();
       }
-      
-      // Check for depth stability (stationary detection)
-      static float last_depth_check = 0;
-      static int stable_count = 0;
 
       if (targetDepth == MAX_TARGET) {  // case for max depth
         if (abs(depth - last_depth_check) < EPSILON && depth>FLOAT_LENGTH+0.1) {
@@ -616,21 +627,17 @@ void measure(float targetDepth, float time) {
           }
         }
       }
-      else {                                            // case for target depth
-        if (abs(depth - targetDepth) < MAX_ERROR) {
-          stable_count++;
-          if (stable_count >= (time * 1000 / MEAS_PERIOD)) {
-            Debug.println("Profile at target depth complete");
-            break;
-          }
-        }
-      }
 
       last_depth_check = depth;
     }
     
     // Allow other tasks to run
     yield();
+
+    if (millis() - start_time > timeout * 1000) {
+      Debug.println("Time out");
+      break; // Exit if PID takes too long
+    }
   }
   
   // Stop motor and return to idle LED state
@@ -645,9 +652,6 @@ void setup() {
   delay(100);
   Serial.begin(115200); 
   Serial.println("Float ESPA v10.0 - Starting initialization...");
-  
-  // Initialize LED early for status feedback
-  setLEDState(LED_INIT);
   
   // Initialize motor pins
   pinMode(EN, OUTPUT);
@@ -668,16 +672,22 @@ void setup() {
   
   // Initialize stepper motor
   stepper.setMaxSpeed(MAX_SPEED);
-  stepper.setAcceleration(MAX_SPEED / 2);
+  stepper.setAcceleration(MAX_SPEED);
   stepper.setEnablePin(EN);
   stepper.setPinsInverted(true, false, true); // Enable pin is active low
   stepper.disableOutputs();
+
+  status_to_send.charge = BATT_THRESH +1; // Initialize with a value above threshold
+  command_received.command = 0; // Initialize command to 0 (idle)
   
   // Initialize EEPROM
   if (!EEPROM.begin(EEPROM_SIZE)) {
     Serial.println("Failed to initialize EEPROM");
     setLEDState(LED_ERROR);
-    while(1) delay(1000);
+    while(1){
+      updateLED();
+      yield();
+    }
   }
   eeprom_write_ptr = 0;
   eeprom_read_ptr = 0;
@@ -690,7 +700,10 @@ void setup() {
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     setLEDState(LED_ERROR);
-    while(1) delay(1000);
+    while(1){
+      updateLED();
+      yield();
+    }
   }
   
   esp_now_register_send_cb(OnDataSent);
@@ -704,7 +717,10 @@ void setup() {
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Failed to add peer");
     setLEDState(LED_ERROR);
-    while(1) delay(1000);
+    while(1){
+      updateLED();
+      yield();
+    }
   }
 
   // Initialize DebugSerial library
@@ -731,8 +747,16 @@ void setup() {
   if (deviceNumber == UINT8_MAX) {
     Debug.println("Failed to find INA220");
     setLEDState(LED_ERROR);
-    while(1) delay(1000);
+    while(1){
+      updateLED();
+      yield();
+    }
   }
+
+  setLEDState(LED_INIT);   // First GREEN 0.5sec blink to indicate INA220 found
+  delay(500);
+  setLEDState(LED_OFF);
+  delay(500);
   
   // Initialize pressure sensor
   sensor.setModel(1);
@@ -745,13 +769,18 @@ void setup() {
     }
     setLEDState(LED_ERROR);
     updateLED();
-    delay(100);
+    yield();
   }
   
   sensor.setFluidDensity(997); // Freshwater density
   sensor.read();
   atm_pressure = sensor.pressure(MS5837::Pa);
   Debug.printf("Atmospheric pressure: %.2f Pa\n", atm_pressure);
+
+  setLEDState(LED_INIT);   // Second GREEN 0.5sec blink to indicate BAR02 found
+  delay(500);
+  setLEDState(LED_OFF);
+  delay(500);
   
   // Perform motor homing
   Debug.println("Starting motor homing...");
@@ -760,7 +789,7 @@ void setup() {
     setLEDState(LED_ERROR);
     while(1) {
       updateLED();
-      delay(1000);
+      yield();
     }
   }
   
@@ -778,6 +807,7 @@ void loop() {
       if (emergency_stop) { // An endstop was hit while idle
           Debug.println("Endstop hit while motor was idle!");
           handleEndstopHit(); // Back off
+          stepper.disableOutputs(); // Disable motor after handling idle hit
           setLEDState(LED_ERROR); 
       }
   }
@@ -847,13 +877,13 @@ void loop() {
           
           // Execute three-phase depth profile
           Debug.println("Phase 0: Descending to target depth");
-          measure(TARGET_DEPTH, STAT_TIME); 
-          delay(500); // Wait between phases
-          Debug.println("Phase 1: Descending to maximum depth (pool bottom)");
-          measure(MAX_TARGET, 5); 
+          measure(TARGET_DEPTH, STAT_TIME, TIMEOUT_PID_TIME); 
+          // delay(500); // Wait between phases
+          // Debug.println("Phase 1: Descending to maximum depth (pool bottom)");
+          // measure(MAX_TARGET, 3); 
           delay(500); // Wait between phases
           Debug.println("Phase 2: Ascending to surface");
-          measure(FLOAT_LENGTH, 6); 
+          measure(FLOAT_LENGTH, 3, TIMEOUT_TIME); 
           
           stepper.disableOutputs(); // Disable motor after profile completion
           
@@ -880,7 +910,7 @@ void loop() {
           
           // Format the JSON string
           snprintf(line, OUTPUT_LEN,
-                   "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%d\"}",
+                   "{\"company_number\":\"EX10\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%d\"}",
                    data.pressure, f_depth(data.pressure), data.temperature, packet_count*WRITE_PERIOD);
           
           delay(50); // Slow down sending rate
@@ -935,6 +965,8 @@ void loop() {
           Debug.printf("Auto mode: %s\n", auto_mode_active ? "ENABLED" : "DISABLED");
           if (auto_mode_active)
             setLEDState(LED_AUTO_MODE);
+          else 
+            setLEDState(LED_IDLE);
         }
         status = 0;
       }
@@ -949,7 +981,7 @@ void loop() {
         
         // Format test package with current sensor data
         snprintf(package, OUTPUT_LEN,
-                "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%d\"}",
+                "{\"company_number\":\"EX10\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%d\"}",
                 sensor.pressure(MS5837::Pa), f_depth(), sensor.temperature(), millis());
         
         send_message(package, 1000); // Send test package (acknowledgment is the package itself)
@@ -1023,14 +1055,14 @@ void loop() {
           Serial.printf("OTA Server: http://%s/update\n", apIP.toString().c_str());
             
           // Start ElegantOTA
-          ElegantOTA.begin(&server); // Pass WebServer instance
-          server.begin();
+          ElegantOTA.begin(&http_server); // Pass WebServer instance
+          http_server.begin();
             
           // Keep OTA server running for 5 minutes
           unsigned long ota_start_time = millis();
           Serial.println("OTA server running for 5 minutes...");
           while (millis() - ota_start_time < 300000) { // 5 minutes
-            server.handleClient();
+            http_server.handleClient();
             ElegantOTA.loop(); // Process ElegantOTA
             updateLED(); // updateLED does not use Debug
             delay(10);
@@ -1038,7 +1070,7 @@ void loop() {
           
           Serial.println("OTA period finished");
           // Stop server and AP
-          server.stop();
+          http_server.stop();
           WiFi.softAPdisconnect(true);
           WiFi.mode(WIFI_OFF); // Turn off WiFi before re-initializing ESP-NOW
           delay(100);
@@ -1093,7 +1125,7 @@ void loop() {
           if (command_received.freq > 1200) command_received.freq = 1200;
           if (command_received.freq < 10) command_received.freq = 10;
           test_speed = command_received.freq;
-          Debug.printf("Test frequency set to: %d Hz\n", test_speed);
+          Debug.printf("Test frequency set to: %u Hz\n", test_speed);
         }
         status = 0;
       }
@@ -1107,15 +1139,22 @@ void loop() {
           
           // Set motor speed based on test frequency
           stepper.setMaxSpeed(test_speed);
-          
-          if (safeMoveSteps(command_received.steps)) {
-            Debug.printf("Test movement completed. Current position: %d\n", current_step);
-          } else {
-            Debug.println("Test movement failed - endstop hit or error");
+          stepper.setAcceleration(test_speed); // Set acceleration for test speed
+          stepper.enableOutputs();
+          stepper.move(command_received.steps);
+
+          while (stepper.distanceToGo() != 0) {
+            stepper.run();
+            updateLED();
+            yield();
           }
           
-          // Restore normal motor speed
+          Debug.printf("Test movement completed. Current position: %d\n", current_step);
+          
+          // Restore normal motor speed and acceleration
           stepper.setMaxSpeed(MAX_SPEED);
+          stepper.setAcceleration(MAX_SPEED); // Restore default acceleration
+          stepper.disableOutputs(); // Ensure motor is disabled after test steps
         }
         status = 0;
       }
@@ -1131,6 +1170,22 @@ void loop() {
             Debug.println("DEBUG: Remote serial output active");
           } else {
             Debug.println("DEBUG MODE DEACTIVATED - Serial output local only");
+          }
+        }
+        status = 0;
+      }
+      break;
+      
+    case 12: // HOME - Perform Homing as requested by remote
+      {
+        uint8_t result = send_message(CMD12_ACK, 1000); 
+        if (result) {
+          Debug.println("Executing Homing command as per remote request.");
+          if (!homeMotor()) {
+            Debug.println("CRITICAL: Homing command (requested remotely) failed!");
+            setLEDState(LED_ERROR); // Indicate error
+          } else {
+            Debug.println("Homing command (requested remotely) completed successfully.");
           }
         }
         status = 0;
