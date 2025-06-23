@@ -42,12 +42,12 @@ const uint8_t DRV8825_SLEEP = 32;           // Pin for DRV8825 sleep mode
 const uint8_t DRV8825_RST = 35;             // Pin for DRV8825 reset
 
 /** MOTOR AND CONTROL CONSTANTS **/
-const uint16_t MAX_STEPS         = 1700;       // Number of motor steps for full range
+const uint16_t MAX_STEPS         = 1730;       // Number of motor steps for full range
 const uint32_t MAX_SPEED         = 200;        // Maximum motor speed in steps/sec
 const uint32_t HOMING_SPEED      = 300;        // Homing speed in steps/sec
-const uint16_t ENDSTOP_MARGIN    = 30;         // Safety margin from endstops in steps
+const uint16_t ENDSTOP_MARGIN    = 20;         // Safety margin from endstops in steps
 const uint32_t HOMING_TIMEOUT    = 5000;      // Homing timeout in milliseconds
-const uint16_t ENDSTOP_ACTIVE_STEPS = 150;    // Only check endstops when motor is within this many steps of them
+const uint16_t ENDSTOP_ACTIVE_STEPS = 20;    // Only check endstops when motor is within this many steps of them
 
 /** TIMING CONSTANTS **/
 const uint16_t MEAS_PERIOD       = 100;        // Period between measurements in ms
@@ -57,7 +57,7 @@ const uint16_t CONN_CHECK_PERIOD = 500;        // Period between acknowledgement
 /** PID CONTROL CONSTANTS **/
 float    Kp                = 10.0;       // Proportional gain (increased for underwater response)
 float    Ki                = 0.0;        // Integral gain (for steady-state error)
-float    Kd                = 300.0;       // Derivative gain (for stability)
+float    Kd                = 350.0;       // Derivative gain (for stability)
 const float    PID_OUTPUT_LIMIT  = 80.0;      // Maximum PID output in steps
 const float    PID_INTEGRAL_LIMIT = 5.0;     // Anti-windup limit for integral term
 
@@ -65,12 +65,12 @@ const float    PID_INTEGRAL_LIMIT = 5.0;     // Anti-windup limit for integral t
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles for maximum points
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
-const float    MAX_ERROR         = 0.45;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    MAX_ERROR         = 0.49;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
 const float    TARGET_DEPTH      = 2.50;        // Target depth to be met and mantained when sinking, expressed in m
 const float    STAT_TIME         = 45;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
 const float    TIMEOUT_PID_TIME  = 180;        // Maximum time for PID to reach target in seconds
-const float    TIMEOUT_TIME      = 30;        // Maximum time for float to reach the target
+const float    TIMEOUT_TIME      = 50;        // Maximum time for float to reach the target
 
 /** NETWORK CONSTANTS **/
 const char*    SSID              = "PIPO";     // OTA WiFi network name
@@ -86,7 +86,7 @@ RGBLed              led(R_PIN, G_PIN, B_PIN, RGBLed::COMMON_CATHODE); // RGB LED
 
 /** MAC ADDRESSES **/
 uint8_t espA_mac[6] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68}; // This ESP32 MAC
-uint8_t broadcastAddress[] = {0xEC, 0xE3, 0x34, 0x66, 0xE1, 0x20}; // ESPB MAC
+uint8_t broadcastAddress[] = {0xEC, 0xE3, 0x34, 0xCE, 0x59, 0x1C}; // ESPB MAC
 
 /** GLOBAL VARIABLES **/
 uint8_t  profile_count    = 0;     // Number of completed profiles
@@ -900,6 +900,7 @@ void loop() {
         char line[OUTPUT_LEN];
         sensor_data data;
         uint16_t packet_count = 0;
+        uint16_t eeprom_read_ptr_old = eeprom_read_ptr; // Save original read pointer
         
         Debug.println("Sending stored data to Control Station");
         
@@ -917,6 +918,7 @@ void loop() {
           send_message(line, 100); // Send data line to CS
           packet_count++;
         }
+        eeprom_read_ptr = eeprom_read_ptr_old; // Restore original read pointer so data can be sent again if needed
         
         strcpy(line, "STOP_DATA");
         send_message(line, 100); // Signal end of data transmission
