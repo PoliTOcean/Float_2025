@@ -59,6 +59,16 @@
 #define CMD5_ACK        "SWITCH_AM_RECVD"
 #define CMD7_ACK        "TRY_UPLOAD_RECVD"
 #define CMD8_ACK        "CHNG_PARMS_RECVD"
+#define CMD9_ACK        "TEST_FREQ_RECVD"
+#define CMD10_ACK       "TEST_STEPS_RECVD"
+
+// Struct to store sensor data more efficiently
+typedef struct sensor_data {
+  uint64_t mseconds;
+  float pressure;
+  float depth;
+  float temperature;
+} sensor_data;
 
 /** I/O STRUCTS 
   Structs containing message and command for communication over MAC. 
@@ -94,6 +104,8 @@ const char*    PASSWORD          = "ciao1234"; // Password for the net the ESPA 
 const uint8_t  DIR               = 25;         // Pin for motor direction driving
 const uint8_t  STEP              = 26;         // Pin for motor tension driving (used as PWM)
 const uint8_t  EN                = 27;         // Active-low pin for motor enabling
+const uint8_t  BUTTON_DOWN       = 16;
+const uint8_t  BUTTON_UP         = 17;
 const uint8_t  MAX_PROFILES      = 2;          // Number of profiles to complete in order to gain maximum points
 const uint8_t  R_PIN             = 19;         // Pin of the RED LED
 const uint8_t  G_PIN             = 18;         // Pin of the GREEN LED
@@ -103,13 +115,15 @@ const uint16_t WRITE_PERIOD      = 5000;       // Period between two consecutive
 const uint16_t CONN_CHECK_PERIOD = 500;        // Period between two consecutive acknoledgements during idle phase, expressed in ms
 const uint16_t BATT_THRESH       = 11500;      // Threshold for the battery charge under which the RGB LED turns yellow, expressed in mV
 const uint16_t ROT_TIME          = 6300;       // Motor rotation time necessary to empty/fullfill the syringes, expressed in ms
-const uint32_t MAX_STEPS         = 1800;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
+const uint16_t MAX_STEPS         = 1800;       // Number of motor steps necessary to fully empty/fill the syringes, to be found empirically
 const uint32_t REV_FREQ          = 300;        // Frequency of the 50% duty cycle PWM used to drive the motor (STEP pin), expressed in Hz
+const uint32_t REV_PERIOD        = 1000/REV_FREQ;  
+const uint32_t MAX_DELTA         = MEAS_PERIOD/REV_PERIOD-1; 
 const int8_t   MAX_TARGET        = -1;         // Encodes the pool bottom as target when given as parameter to the measure() function
 const float    FLOAT_LENGTH      = 0.51;       // Length of the FLOAT, measured form the very bottom to the pressure sensor top, expressed in m
-const float    MAX_ERROR         = 0.05;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
+const float    MAX_ERROR         = 0.5;        // Error span in which the FLOAT can be considered at target depth during a profile, expressed in m
 const float    EPSILON           = 0.01;       // Error span in which two consecutive measures are considered equal, expressed in m
-const float    TARGET_DEPTH      = 0.1;        // Target depth to be met and mantained when sinking, expressed in m
+const float    TARGET_DEPTH      = 1.0;        // Target depth to be met and mantained when sinking, expressed in m
 const float    STAT_TIME         = 5;          // Time period in which the FLOAT has to maintain TARGET_DEPTH, expressed in s 
 
 /** PROGRAM GLOBAL VARIABLES **/
@@ -127,12 +141,12 @@ uint16_t eeprom_read_ptr  = 0;  // Pointer to the location of the last read byte
 uint16_t eeprom_write_ptr = 0;  // Pointer to the location of the next available byte in EEPROM
 uint16_t led_blink        = 0;  // Blinking period for the RGB LED, expressed in ms
 uint16_t current_step     = 0;  // Number of steps done by the motor in the same direction wrt its initial position
-uint64_t test_period      = 0;  // Test steps period, updatable via the specific TEST_FREQ command 
+uint32_t test_period      = REV_PERIOD;  // Test steps period, updatable via the specific TEST_FREQ command 
 uint64_t blink_ref        = 0;  // Time reference for the blinking period of the RGB LED
 uint64_t time_ref         = 0;  // Time reference for writing on the EEPROM during immersion phase, updated at each profile start
 float    atm_pressure     = 0;  // Stores the initial atmosphere pressure, needed for correct depth calculation
 float    depth            = 0;  // Depth measured during immersion phase, written to EEPROM and used to sense FLOAT stationarity, expressed in Pa
-float    Kp               = 300; // PID parameters, modifiable with a specific command
+float    Kp               = 1; // PID parameters, modifiable with a specific command
 float    Kd               = 0;
 float    Ki               = 0;  
 float    depth_integral   = 0;  // Integral of the depth values measured in a profile. Used for PID calculations.
@@ -247,9 +261,8 @@ float f_depth () {
 *********************************************************************************************************
 *                                           write_EEPROM()
 *
-* Description : Writes to the EEPROM mounted on the board. In particular it writes a single line
-*               containing all the data needed by the CS, wrapped in a JSON format and terminated 
-*               by a new line character ('\n'). The write starts at the current eeprom_write_ptr.
+* Description : Writes to the EEPROM mounted on the board. In particular it writes the sensor data
+*               as a struct to save space. The write starts at the current eeprom_write_ptr.
 *               The function finally updates the eeprom_write_ptr pointer. If EEPROM is full,
 *               it stops writing. The data is mostly provided by the sensor object which has to be
 *               updated before calling this function, by calling sensor.read function.
@@ -259,32 +272,23 @@ float f_depth () {
 * Return(s)   : none
 *********************************************************************************************************
 */
-void write_EEPROM () {
-  char data_buffer[OUTPUT_LEN]; // Buffer to hold the formatted string
-
-  // Format the data string
-  snprintf(data_buffer, OUTPUT_LEN,
-           "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%llu\"}\n",
-            // pressure as measured from the bottom of the FLOAT: the multiplication is for m to Pa conversion in water
-           sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH * 10000),
-           // depth value as calculated from f_depth function, in m
-           depth,
-           // temperature in Celsius
-           sensor.temperature(),
-            // milliseconds elapsed from the profile start
-           (millis() - time_ref));
-
-  int data_len = strlen(data_buffer);
-
+void write_EEPROM() {
+  sensor_data data;
+  
+  // Fill the struct with current sensor data
+  data.pressure = sensor.pressure(MS5837::Pa) + (FLOAT_LENGTH * 10000);
+  data.depth = depth;
+  data.temperature = sensor.temperature();
+  data.mseconds = millis() - time_ref;
+  
   // Check if there is enough space in EEPROM
-  if (eeprom_write_ptr + data_len < EEPROM_SIZE) {
-    for (int i = 0; i < data_len; i++) {
-      EEPROM.write(eeprom_write_ptr + i, data_buffer[i]);
-    }
-    eeprom_write_ptr += data_len; // Update the write pointer
+  if (eeprom_write_ptr + sizeof(sensor_data) < EEPROM_SIZE) {
+    // Write the struct as a sequence of bytes
+    EEPROM.put(eeprom_write_ptr, data);
+    eeprom_write_ptr += sizeof(sensor_data); // Update the write pointer
     EEPROM.commit(); // Commit changes to EEPROM
   } else {
-    // Handle EEPROM full condition (e.g., log an error, stop writing)
+    // Handle EEPROM full condition
     Serial.println("write_EEPROM(): EEPROM full!");
   }
 }
@@ -307,13 +311,12 @@ void write_EEPROM () {
 */
 void measure (float targetDepth, float time) {
   uint8_t elapsed_stat = 0;
-  uint8_t motor_stopped = 1;
-  int32_t calc_step = 0;
+  uint8_t motor_stopped = 0;
   int32_t PID_res = 0;
   uint64_t prec_time_meas = millis();                 // Stores time reference for measurement period timer
   uint64_t start_time = millis();
   float prevDepth = 0;
-  float rev_time = 0;   
+  uint16_t remaining_steps  = 0;                      // PWM steps needed for the completion of a sinking/ascension phase   
   float velocity = 0;
   float error = 0;
 
@@ -323,13 +326,10 @@ void measure (float targetDepth, float time) {
 
     LED_check_for_blink();                            // Makes the RGB LED blink at set period
     
-    if (!motor_stopped) {
-      if (millis() - start_time > rev_time) {
-        digitalWrite(EN, HIGH); // Since not used, disable motor to save power
-        if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
-          elapsed_stat++;
-          if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
-        }
+    if (motor_stopped) {
+      if (prevDepth < depth + EPSILON && prevDepth > depth - EPSILON) {
+        elapsed_stat++;
+        if (elapsed_stat >= (time*1000)/MEAS_PERIOD) return;
       }
     }
 
@@ -347,22 +347,30 @@ void measure (float targetDepth, float time) {
       }
 
       if (targetDepth == 0 || targetDepth == MAX_TARGET) {
-        if (motor_stopped) {
+        if (!motor_stopped) {
+          setLED(255, 0, 255, 1000);
           if (targetDepth == MAX_TARGET) {
-            rev_time = ((MAX_STEPS-current_step) / (float) REV_FREQ) * 1000; 
+            remaining_steps = MAX_STEPS-current_step;
             digitalWrite(DIR, 0);
-            current_step = MAX_STEPS;
           }
           else {
-            rev_time = (current_step/ (float) REV_FREQ) * 1000; // time of motor revolution in ms
+            remaining_steps = current_step;
             digitalWrite(DIR, 1);
-            current_step = 0;
           }
-          analogWriteFrequency(REV_FREQ);
+          Serial.println(remaining_steps);
           digitalWrite(EN, LOW);                                // Enable motor if disabled
-          motor_stopped = 0;
+          for (uint32_t i=0; !remaining_steps; i++) {           
+            digitalWrite(STEP, 1);
+            delay(REV_PERIOD/2);
+            digitalWrite(STEP, 0);
+            delay(REV_PERIOD/2);
+            remaining_steps--;
+          }
+          digitalWrite(EN, HIGH);                               // Since not used, disable motor to save power                       
+          motor_stopped = 1;
         } 
       } else {
+        setLED(0, 0, 255, 1000);
         // PID output calculations ---
         error = targetDepth - depth;
         velocity = (prevDepth - depth) / ((float) MEAS_PERIOD / 1000);
@@ -371,34 +379,37 @@ void measure (float targetDepth, float time) {
         // ---------------------------
 
         if (PID_res >= 0) {
-          if (PID_res > REV_FREQ) PID_res = REV_FREQ;  // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
-          if (PID_res < 20 || current_step == MAX_STEPS) {
+          if (PID_res > MAX_DELTA) PID_res = MAX_DELTA;  // Cap the PID output to the maximum of the frequency. This should not be necessary with good params  
+          if (current_step == MAX_STEPS) {
             digitalWrite(EN, HIGH);
-            PID_res = 0;
           } 
           else {
-            analogWriteFrequency(PID_res);
+            digitalWrite(STEP, 0);  
+            digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
             digitalWrite(EN, LOW);
+            for (uint32_t i=0; i<PID_res; i++) {           
+              digitalWrite(STEP, 1);
+              delay(REV_PERIOD/2);
+              digitalWrite(STEP, 0);
+              delay(REV_PERIOD/2);
+            }
           }
-          digitalWrite(DIR, 0);                        // Sets DIR pin with the needed rotation direction. In this case the FLOAT sinks                        
         } else {
-          if (-PID_res > REV_FREQ) PID_res = -REV_FREQ;
-          if (-PID_res < 20 || current_step == 0) {
+          if (-PID_res > MAX_DELTA) PID_res = -MAX_DELTA;
+          if (current_step == 0) {
             digitalWrite(EN, HIGH);
-            PID_res = 0;
           } else {
-            analogWriteFrequency(-PID_res);
+            digitalWrite(STEP, 0);
+            digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
             digitalWrite(EN, LOW);
+            for (uint32_t i=0; i<PID_res; i++) {     
+              digitalWrite(STEP, 1);
+              delay(REV_PERIOD/2);
+              digitalWrite(STEP, 0);
+              delay(REV_PERIOD/2);
+            }
           }
-          digitalWrite(DIR, 1);                        // The FLOAT goes towards the surface
         }
-
-        calc_step = current_step + PID_res * ((float) MEAS_PERIOD / 1000);
-        if (calc_step >= (int32_t) MAX_STEPS) current_step = MAX_STEPS;
-        else if (calc_step <= 0) current_step = 0;
-        else current_step = calc_step;
-        
-
 
         if (targetDepth < depth + MAX_ERROR && targetDepth > depth - MAX_ERROR) {
           elapsed_stat++;
@@ -410,8 +421,48 @@ void measure (float targetDepth, float time) {
       //Serial.println(depth);
       
       prevDepth = depth;                             // Updates previous depth measurement with the last one
+      Serial.println(current_step);
     }
   }
+}
+
+void ButtonUp_IRQ () {
+  // digitalWrite(STEP, 0);
+  // digitalWrite(DIR, 1);
+  // digitalWrite(EN, 0);
+  // for (uint32_t i=0; i<2; i++) {
+  //   digitalWrite(STEP, 1);
+  //   delay(REV_PERIOD/2);
+  //   digitalWrite(STEP, 0);
+  //   delay(REV_PERIOD/2);
+  // } 
+  digitalWrite(EN, 1);
+  current_step = MAX_STEPS;
+}
+
+void ButtonDown_IRQ () {
+  // digitalWrite(STEP, 0);
+  // digitalWrite(DIR, 0);
+  // digitalWrite(EN, 0);
+  // for (uint32_t i=0; i<2; i++) {
+  //   digitalWrite(STEP, 1);
+  //   delay(REV_PERIOD/2);
+  //   digitalWrite(STEP, 0);
+  //   delay(REV_PERIOD/2);
+  // } 
+  digitalWrite(EN, 1);
+  current_step = 0;
+}
+
+void Step_IRQ () {
+  if (digitalRead(EN))
+    return;
+
+  if (!digitalRead(DIR)) {
+    if(current_step < MAX_STEPS) current_step++;
+  } else if (current_step > 0) current_step--;
+
+  //if (current_step == 0 || current_step == MAX_STEPS) digitalWrite(EN, 1);
 }
 
 void setLED (uint8_t R, uint8_t G, uint8_t B, uint16_t period) {
@@ -457,7 +508,9 @@ void setup () {
   pinMode(R_PIN, OUTPUT);                                              // R LED
   pinMode(G_PIN, OUTPUT);                                              // G LED
   pinMode(B_PIN, OUTPUT);                                              // B LED
-  pinMode(EN, OUTPUT);
+  pinMode(EN, OUTPUT); 
+  pinMode(BUTTON_UP, INPUT_PULLUP);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);                                           
   digitalWrite(EN, HIGH);                                              // Disables the motor until needed
 
   if (!EEPROM.begin(EEPROM_SIZE)) {                                    // Inits EEPROM
@@ -530,7 +583,10 @@ void setup () {
   sensor.read();
   atm_pressure = sensor.pressure(MS5837::Pa);                          // Stores pressure value at water level for depth calculation, in Pa
 
-  analogWrite(STEP, 127);                                              // Sets the duty cycle of the motor PWM to 50%
+  //analogWrite(STEP, 127);                                              // Sets the duty cycle of the motor PWM to 50%
+  attachInterrupt(digitalPinToInterrupt(STEP), Step_IRQ, RISING);
+  //attachInterrupt(digitalPinToInterrupt(BUTTON_UP), ButtonUp_IRQ, FALLING);
+  //attachInterrupt(digitalPinToInterrupt(BUTTON_DOWN), ButtonDown_IRQ, FALLING);
 }
 
 /** MAIN SWITCH **/
@@ -613,7 +669,7 @@ void loop () {
             }
           }
 
-          digitalWrite(EN, HIGH);                                  // Disables the motor
+          digitalWrite(EN, 1);                                     // Disables the motor
         } 
         status = 0;                                                // Returns to idle     
       }
@@ -621,32 +677,25 @@ void loop () {
     case 2: // Data sending                                           // The command doesn't need an acknowledgement as 
       {                                                               // the sended data already works as ack                      
         char line[OUTPUT_LEN];
-        int line_idx = 0;
-        char current_char;
-
-        while (eeprom_read_ptr < eeprom_write_ptr) {
-          current_char = EEPROM.read(eeprom_read_ptr);
-          eeprom_read_ptr++; // Increment read pointer
-
-          if (current_char == '\n' || line_idx == OUTPUT_LEN-1) { // End of line or buffer full
-            if (current_char != '\n') {
-              line[line_idx] = current_char; // Add character to last position of the buffer
-            } else {
-              for(int i=line_idx; i<OUTPUT_LEN; i++) line[line_idx] = '\0'; // Padding of null-terminators
-            }
-
-            delay(50); // Slow down sending rate
-            send_message(line, 100); // Tries to send read data line to CS: if a sending fails, relative data package is lost
-
-            line_idx = 0; // Reset line index for the next line
-          } else {
-            line[line_idx++] = current_char; // Add character to line buffer
-          }
+        sensor_data data;
+        
+        while (eeprom_read_ptr + sizeof(sensor_data) <= eeprom_write_ptr) {
+          // Read struct from EEPROM
+          EEPROM.get(eeprom_read_ptr, data);
+          eeprom_read_ptr += sizeof(sensor_data);
+          
+          // Format the JSON string exactly as before
+          snprintf(line, OUTPUT_LEN,
+                   "{\"company_number\":\"EX16\",\"pressure\":\"%.2f\",\"depth\":\"%.2f\",\"temperature\":\"%.2f\",\"mseconds\":\"%llu\"}",
+                   data.pressure, data.depth, data.temperature, data.mseconds);
+          
+          delay(50); // Slow down sending rate
+          send_message(line, 100); // Tries to send read data line to CS
         }
-
-        strcpy(line, "STOP_DATA/0");
-        send_message(line, 100); // Tries to signal the end of the last profile measurements 
-
+        
+        strcpy(line, "STOP_DATA\0");
+        send_message(line, 100); // Tries to signal the end of the last profile measurements
+        
         status = 0; // Returns to idle
       }
       break;
@@ -657,10 +706,21 @@ void loop () {
         result = send_message(CMD3_ACK, 1000);
         if (result) { // Commands execute only if their ack sending succeeds
           digitalWrite(DIR, 1);
-          analogWriteFrequency(REV_FREQ);
-          digitalWrite(EN, LOW);
-          delay(ROT_TIME);
-          digitalWrite(EN, HIGH);
+          digitalWrite(EN, 0);
+          // digitalWrite(STEP, 0);
+          // while(!digitalRead(EN)) {          
+          //   digitalWrite(STEP, 1);
+          //   delay(REV_PERIOD/2);
+          //   digitalWrite(STEP, 0);
+          //   delay(REV_PERIOD/2);
+          // }
+          for (uint32_t i=0; i<MAX_STEPS; i++) {           
+              digitalWrite(STEP, 1);
+              delay(REV_PERIOD/2);
+              digitalWrite(STEP, 0);
+              delay(REV_PERIOD/2);
+          }
+          digitalWrite(EN, 1);
         }
         status = 0;
       }
@@ -751,7 +811,7 @@ void loop () {
         status = 0; // Returns to idle
       }
       break;
-    case 9: // New command routine
+    case 9: // TEST_FREQ
      {
        uint8_t result;
     
@@ -763,7 +823,7 @@ void loop () {
        status = 0; // Returns to idle
      }
      break;
-    case 10: // New command routine
+    case 10: // TEST_STEPS
      {
        uint8_t result;
     
@@ -777,7 +837,7 @@ void loop () {
         Serial.println(input.steps);
         digitalWrite(STEP, 0);
         digitalWrite(EN, 0);
-        for (uint8_t i=0; i<input.steps; i++) {          
+        for (uint32_t i=0; i<input.steps; i++) {          
           digitalWrite(STEP, 1);
           delay(test_period/2);
           digitalWrite(STEP, 0);
