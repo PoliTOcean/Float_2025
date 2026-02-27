@@ -1,6 +1,6 @@
 /*
  *******************************************************************************
- *                      FLOAT board — ESP32-A (ESPA)  v10.0
+ *                      FLOAT board — ESP32-A (ESPA)  v11.0
  *
  * main.cpp
  * Entry point: setup() + loop() with the main state machine.
@@ -15,7 +15,8 @@
  *   comms/comms.h         — ESP-NOW messaging + OTA
  *   profile/profile.h     — depth profile execution + EEPROM logging
  *
- * Developers: Fachechi Gino Marco, Gullotta Salvatore
+ * Maintainers: Colabella Davide
+ * Past contributors: Fachechi Gino Marco, Gullotta Salvatore
  * Company   : Team PoliTOcean @ Politecnico di Torino
  * Board pkg : esp32 by Espressif Systems v2.0.17
  *******************************************************************************
@@ -113,6 +114,7 @@ void setup() {
 
     // --- Motor + homing ---
     motor.begin();
+    //motor_selftest();
     Debug.println("Starting motor homing...");
     if (!motor.home()) {
         Debug.println("CRITICAL: motor homing failed");

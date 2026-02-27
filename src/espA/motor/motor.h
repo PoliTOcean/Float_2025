@@ -2,15 +2,19 @@
 
 #include <Arduino.h>
 #include <AccelStepper.h>
+#include <Wire.h>
+#include <vl53l7cx_class.h>
 
 /*
  *******************************************************************************
  * motor.h
- * Stepper motor control: homing, safe absolute/relative moves, endstop handling.
+ * Stepper motor control: homing via TOF sensor, safe absolute/relative moves.
+ *
+ * Homing uses a VL53L7CX Time-of-Flight sensor instead of mechanical endstops.
  *
  * Coordinate system (after homing):
- *   0                  = home / fully retracted (lower endstop side)
- *   MOTOR_MAX_STEPS    = fully extended (upper endstop side)
+ *   0                  = home / fully retracted (lower position)
+ *   MOTOR_MAX_STEPS    = fully extended (upper position)
  *   Safe range         = [MOTOR_ENDSTOP_MARGIN, MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN]
  *******************************************************************************
  */
@@ -40,8 +44,8 @@ public:
     bool emergencyStop()  const { return _emergencyStop; }
 
     // Call every loop iteration (and inside blocking move loops via yield)
-    // to process interrupt flags and drive the stepper.
-    // is_homing: true only during the homing sequence (enables lower endstop anywhere)
+    // to process the TOF sensor and drive the stepper.
+    // is_homing: true only during the homing sequence
     void processEndstops(bool isHoming = false);
 
     // Exposed so the profile / main loop can call stepper.run() if needed
@@ -61,15 +65,6 @@ private:
     void _disableOutputs();
     void _enableOutputs();
 };
-
-// ---------------------------------------------------------------------------
-// Interrupt flags — set by ISRs, consumed by processEndstops()
-// ---------------------------------------------------------------------------
-extern volatile bool g_upperEndstopTriggered;
-extern volatile bool g_lowerEndstopTriggered;
-
-void IRAM_ATTR upperEndstopISR();
-void IRAM_ATTR lowerEndstopISR();
 
 // Singleton
 extern MotorController motor;

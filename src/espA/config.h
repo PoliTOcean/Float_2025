@@ -13,16 +13,16 @@
 // ---------------------------------------------------------------------------
 // HARDWARE PIN DEFINITIONS
 // ---------------------------------------------------------------------------
-constexpr uint8_t PIN_DIR           = 32;   // Motor direction
-constexpr uint8_t PIN_STEP          = 33;   // Motor step pulses
-constexpr uint8_t PIN_EN            = 27;   // Motor enable (active low)
-constexpr uint8_t PIN_ENDSTOP_DOWN  = 16;   // Lower endstop (home position)
-constexpr uint8_t PIN_ENDSTOP_UP    = 17;   // Upper endstop
+constexpr uint8_t PIN_DIR           = 32;   // IO32: DIR  (dalla PCB)
+constexpr uint8_t PIN_STEP          = 33;   // IO33: STEP (dalla PCB)
+constexpr uint8_t PIN_EN            = 27;   // IO27: ENABLE ✓
+constexpr uint8_t PIN_DRV_SLEEP     = 25;   // IO25: SLEEP (dalla PCB)
+constexpr uint8_t PIN_DRV_RST       = 26;   // IO26: RESET (dalla PCB)
+
+// Note: PIN_ENDSTOP_DOWN and PIN_ENDSTOP_UP removed — replaced with TOF sensor
 constexpr uint8_t PIN_LED_R         = 19;   // Red LED channel
 constexpr uint8_t PIN_LED_G         = 18;   // Green LED channel
 constexpr uint8_t PIN_LED_B         = 5;    // Blue LED channel
-constexpr uint8_t PIN_DRV_SLEEP     = 25;   // DRV8825 sleep
-constexpr uint8_t PIN_DRV_RST       = 26;
 
 // ---------------------------------------------------------------------------
 // MOTOR CONSTANTS
@@ -30,10 +30,15 @@ constexpr uint8_t PIN_DRV_RST       = 26;
 constexpr uint16_t MOTOR_MAX_STEPS       = 1730;  // Full travel range (steps)
 constexpr uint32_t MOTOR_MAX_SPEED       = 200;   // Normal operating speed (steps/s)
 constexpr uint32_t MOTOR_HOMING_SPEED    = 300;   // Homing speed (steps/s)
-constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 20;    // Safety margin from endstops (steps)
-constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 5000;  // Homing timeout (ms)
+constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
+constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 10000;  // Homing timeout (ms)
 // Endstop proximity window: only check endstop when within this many steps of it
 constexpr uint16_t MOTOR_ENDSTOP_WINDOW  = 20;
+
+// TOF (Time-of-Flight) sensor — VL53L7CX
+constexpr uint8_t  TOF_LPN_PIN           = 16;    // Low Power eNable pin
+constexpr uint8_t  TOF_I2C_RST_PIN       = 15;    // I2C reset pin
+constexpr float    TOF_HOMING_THRESHOLD  = 10.0f; // Distance threshold for homing (mm)
 
 // ---------------------------------------------------------------------------
 // TIMING CONSTANTS  (ms unless noted)
