@@ -34,6 +34,8 @@
 #include "sensors/sensors.h"
 #include "comms/comms.h"
 #include "profile/profile.h"
+#include "imu.h"
+#include "nav_pid.h"
 
 // ---------------------------------------------------------------------------
 // State machine status codes
@@ -68,6 +70,10 @@ static uint32_t g_testSpeed       = MOTOR_MAX_SPEED;
 // Make debug_mode_active reachable by DebugSerial / comms (extern linkage)
 bool debug_mode_active = false;
 
+//test for IMU Implementation
+NavPIDController pitchPID(1.0, 0.1, 0.05); // Valori di test
+unsigned long lastNavTime = 0;
+
 // ---------------------------------------------------------------------------
 // SETUP
 // ---------------------------------------------------------------------------
@@ -101,6 +107,10 @@ void setup() {
     // Both _initPressureSensor() and _initPowerMonitor() will block and
     // show LED_ERROR if the hardware is not found.
     sensors.begin();
+
+    imu.begin();
+    pitchPID.reset();
+    lastNavTime = millis();
 
     // Two short green blinks to confirm both sensors are alive
     ledController.setState(LEDState::INIT);
@@ -272,16 +282,22 @@ void loop() {
     case CMD_SEND_PACKAGE: // Send a single live sensor snapshot
     {
         sensors.read();
+        imu.read();
+
         char packet[OUTPUT_LEN];
         snprintf(packet, OUTPUT_LEN,
                  "{\"company_number\":\"EX10\","
                  "\"pressure\":\"%.2f\","
                  "\"depth\":\"%.2f\","
                  "\"temperature\":\"%.2f\","
+                 "\"roll\":\"%.2f\","
+                "\"pitch\":\"%.2f\","
+                "\"yaw\":\"%.2f\","
                  "\"mseconds\":\"%lu\"}",
                  sensors.pressure(),
                  sensors.depth(),
                  sensors.temperature(),
+                 imu.roll,imu.pitch,imu.yaw,
                  millis());
 
         comms.sendMessage(packet, 1000);
