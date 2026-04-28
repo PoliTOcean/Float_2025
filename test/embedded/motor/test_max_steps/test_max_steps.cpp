@@ -1,7 +1,10 @@
 #include <Arduino.h>
 #include <unity.h>
 #include "motor.h"
+#include "led.h"
 #include "config.h"
+
+LEDController ledController(0, 0, 0);
 
 MotorController motor;
 

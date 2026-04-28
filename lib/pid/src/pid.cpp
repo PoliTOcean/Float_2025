@@ -8,7 +8,6 @@
  *******************************************************************************
  */
 
-PIDController pidController(PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT);
 
 PIDController::PIDController(float kp, float ki, float kd)
     : Kp(kp), Ki(ki), Kd(kd) {}

@@ -15,7 +15,6 @@
  *******************************************************************************
  */
 
-ProfileManager profileManager;
 
 ProfileManager::ProfileManager() {}
 

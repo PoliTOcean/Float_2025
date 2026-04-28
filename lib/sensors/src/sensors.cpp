@@ -10,7 +10,6 @@
  *******************************************************************************
  */
 
-SensorManager sensors;
 
 SensorManager::SensorManager() {}
 

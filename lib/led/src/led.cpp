@@ -7,7 +7,6 @@
  *******************************************************************************
  */
 
-LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 
 LEDController::LEDController(uint8_t rPin, uint8_t gPin, uint8_t bPin)
     : _led(rPin, gPin, bPin, RGBLed::COMMON_CATHODE) {}

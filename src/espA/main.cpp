@@ -70,8 +70,15 @@ static uint32_t g_testSpeed       = MOTOR_MAX_SPEED;
 // Make debug_mode_active reachable by DebugSerial / comms (extern linkage)
 bool debug_mode_active = false;
 
-//test for IMU Implementation
-NavPIDController pitchPID(1.0, 0.1, 0.05, -100.0, 100.0, -20.0, 20.0); // Valori di test
+
+// Global instances of main classes
+LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
+MotorController motor;
+SensorManager sensors;
+PIDController pidController(PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT);
+ProfileManager profileManager;
+// CommsManager comms; // Uncomment if you need this instance here
+NavPIDController pitchPID(1.0, 0.1, 0.05, -100.0, 100.0, -20.0, 20.0); // Test values
 unsigned long lastNavTime = 0;
 
 // ---------------------------------------------------------------------------
