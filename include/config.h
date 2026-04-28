@@ -27,9 +27,17 @@ constexpr uint8_t PIN_LED_B         = 5;    // Blue LED channel
 // ---------------------------------------------------------------------------
 // MOTOR CONSTANTS
 // ---------------------------------------------------------------------------
-constexpr uint16_t MOTOR_MAX_STEPS       = 1730;  // Full travel range (steps)
-constexpr uint32_t MOTOR_MAX_SPEED       = 200;   // Normal operating speed (steps/s)
-constexpr uint32_t MOTOR_HOMING_SPEED    = 300;   // Homing speed (steps/s)
+constexpr uint16_t MOTOR_STEPS_PER_REV   = 200;   // Motor steps per revolution
+constexpr uint8_t  MOTOR_MICROSTEP       = 1;     // Microstepping (1 = full step)
+constexpr uint8_t  MOTOR_GEAR_RATIO      = 27;    // Gearbox ratio (output turns per motor turn)
+constexpr float    MOTOR_LEAD_MM_PER_REV = 1.5f;  // Lead screw travel per output rev (mm)
+constexpr float    MOTOR_TRAVEL_MM       = 100.0f; // Total syringe travel (mm)
+constexpr float    MOTOR_STEPS_PER_MM    = (MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP *
+										   MOTOR_GEAR_RATIO) / MOTOR_LEAD_MM_PER_REV;
+constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
+																 MOTOR_STEPS_PER_MM + 0.5f);
+constexpr uint32_t MOTOR_MAX_SPEED       = 150;   // Normal operating speed (steps/s)
+constexpr uint32_t MOTOR_HOMING_SPEED    = 120;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
 constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 10000;  // Homing timeout (ms)
 // Endstop proximity window: only check endstop when within this many steps of it
