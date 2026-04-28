@@ -8,7 +8,10 @@ public:
     float output_min, output_max;
     float integral_min, integral_max;
 
-    NavPIDController(float kp, float ki, float kd);
+    // Aggiornato per corrispondere al file .cpp
+    NavPIDController(float kp, float ki, float kd, 
+                     float out_min, float out_max, 
+                     float int_min, float int_max);
 
     void reset();
     float calculate(float setpoint, float current_value, float dt);

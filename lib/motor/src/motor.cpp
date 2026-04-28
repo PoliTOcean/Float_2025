@@ -1,7 +1,7 @@
 #include "motor.h"
-#include "../config.h"
-#include "../led/led.h"
-#include <DebugSerial.h>
+#include "config.h"
+#include "led.h"
+#include "DebugSerial.h"
 
 /*
  *******************************************************************************

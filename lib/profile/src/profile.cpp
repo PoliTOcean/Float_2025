@@ -1,13 +1,13 @@
 #include "profile.h"
-#include "../config.h"
-#include "../led/led.h"
-#include "../motor/motor.h"
-#include "../pid/pid.h"
-#include "../sensors/sensors.h"
-#include "../comms/comms.h"
+#include "config.h"
+#include "led.h"
+#include "motor.h"
+#include "pid.h"
+#include "sensors.h"
+#include "comms.h"
 #include <EEPROM.h>
-#include <float_common.h>
-#include <DebugSerial.h>
+#include "float_common.h"
+#include "DebugSerial.h"
 
 /*
  *******************************************************************************

@@ -1,6 +1,6 @@
 #include "pid.h"
-#include "../config.h"
-#include <DebugSerial.h>
+#include "config.h"
+#include "DebugSerial.h"
 
 /*
  *******************************************************************************

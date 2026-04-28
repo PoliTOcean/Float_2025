@@ -1,6 +1,6 @@
 #include "sensors.h"
-#include "../config.h"
-#include "../led/led.h"
+#include "config.h"
+#include "led.h"
 #include <Wire.h>
 #include <DebugSerial.h>
 

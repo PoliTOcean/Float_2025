@@ -27,13 +27,13 @@
 #include <float_common.h>
 #include <DebugSerial.h>
 
-#include "config.h"
-#include "led/led.h"
-#include "motor/motor.h"
-#include "pid/pid.h"
-#include "sensors/sensors.h"
-#include "comms/comms.h"
-#include "profile/profile.h"
+#include <config.h>
+#include "led.h"
+#include "motor.h"
+#include "pid.h"
+#include "sensors.h"
+#include "comms.h"
+#include "profile.h"
 #include "imu.h"
 #include "nav_pid.h"
 
@@ -71,7 +71,7 @@ static uint32_t g_testSpeed       = MOTOR_MAX_SPEED;
 bool debug_mode_active = false;
 
 //test for IMU Implementation
-NavPIDController pitchPID(1.0, 0.1, 0.05); // Valori di test
+NavPIDController pitchPID(1.0, 0.1, 0.05, -100.0, 100.0, -20.0, 20.0); // Valori di test
 unsigned long lastNavTime = 0;
 
 // ---------------------------------------------------------------------------
