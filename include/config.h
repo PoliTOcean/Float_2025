@@ -31,7 +31,7 @@ constexpr uint16_t MOTOR_STEPS_PER_REV   = 200;   // Motor steps per revolution
 constexpr uint8_t  MOTOR_MICROSTEP       = 1;     // Microstepping (1 = full step)
 constexpr uint8_t  MOTOR_GEAR_RATIO      = 27;    // Gearbox ratio (output turns per motor turn)
 constexpr float    MOTOR_LEAD_MM_PER_REV = 1.5f;  // Lead screw travel per output rev (mm)
-constexpr float    MOTOR_TRAVEL_MM       = 100.0f; // Total syringe travel (mm)
+constexpr float    MOTOR_TRAVEL_MM       = 80.0f; // Total syringe travel (mm)
 constexpr float    MOTOR_STEPS_PER_MM    = (MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP *
 										   MOTOR_GEAR_RATIO) / MOTOR_LEAD_MM_PER_REV;
 constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
