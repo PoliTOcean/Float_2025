@@ -23,8 +23,12 @@ class MotorController {
 public:
     MotorController();
 
-    // Call once in setup() — configures pins and AccelStepper
-    void begin();
+    // Call once in setup() — configures pins and AccelStepper.
+    // Set initTof=false for motor-only bench tests without the TOF sensor.
+    void begin(bool initTof = true);
+
+    // Bench-test helper: trust the current mechanical position as already homed.
+    void assumeHomedAt(long position);
 
     // Drive to lower endstop and set position = 0.
     // Returns true on success, false on timeout or unexpected endstop hit.

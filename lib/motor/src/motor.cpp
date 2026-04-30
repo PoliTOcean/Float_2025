@@ -20,7 +20,7 @@ MotorController::MotorController()
     : stepper(AccelStepper::DRIVER, PIN_STEP, PIN_DIR) {}
 
 // ---------------------------------------------------------------------------
-void MotorController::begin() {
+void MotorController::begin(bool initTof) {
     pinMode(PIN_EN,        OUTPUT);
     pinMode(PIN_DRV_SLEEP, OUTPUT);
     pinMode(PIN_DRV_RST,   OUTPUT);
@@ -37,6 +37,11 @@ void MotorController::begin() {
     stepper.setMaxSpeed(MOTOR_MAX_SPEED);
     stepper.setAcceleration(MOTOR_MAX_SPEED);
     _disableOutputs();
+
+    if (!initTof) {
+        Debug.println("Motor: TOF initialization skipped");
+        return;
+    }
 
     // --- Initialize TOF Sensor ---
     Debug.println("Motor: initializing TOF sensor");
@@ -93,6 +98,15 @@ void MotorController::begin() {
     }
 
     Debug.println("Motor: TOF sensor initialized successfully");
+}
+
+// ---------------------------------------------------------------------------
+void MotorController::assumeHomedAt(long position) {
+    stepper.setCurrentPosition(position);
+    _homed = true;
+    _emergencyStop = false;
+    _upperHit = false;
+    _lowerHit = false;
 }
 
 // ---------------------------------------------------------------------------
