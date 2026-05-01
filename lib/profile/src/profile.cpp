@@ -154,8 +154,8 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     }
     // -----------------------------------------------------------------------
 
-    motor.stepper.stop();
-    motor.stepper.disableOutputs();
+    motor.stop();
+    motor.disableOutputs();
     Debug.println("Profile phase finished");
 }
 

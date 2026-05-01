@@ -9,7 +9,9 @@
  * Module map:
  *   config.h              — pin definitions, tuning constants
  *   led/led.h             — RGB LED state machine
- *   motor/motor.h         — AccelStepper, homing, safe moves, endstops
+ *   motor/motor.h         — stepper motor controller
+ *   tof/tof.h             — VL53L7CX Time-of-Flight sensor controller
+ *   motion_control.h      — homing, safe movement, and emergency stop
  *   pid/pid.h             — depth PID controller
  *   sensors/sensors.h     — Bar02 pressure sensor + INA219 power monitor
  *   comms/comms.h         — ESP-NOW messaging + OTA
@@ -30,6 +32,8 @@
 #include <config.h>
 #include "led.h"
 #include "motor.h"
+#include "tof.h"
+#include "motion_control.h"
 #include "pid.h"
 #include "sensors.h"
 #include "comms.h"
@@ -74,6 +78,8 @@ bool debug_mode_active = false;
 // Global instances of main classes
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
+TofSensor tofSensor(Wire, TOF_LPN_PIN, TOF_I2C_RST_PIN);
+MotionController motionController(motor, tofSensor);
 SensorManager sensors;
 PIDController pidController(PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT);
 ProfileManager profileManager;
@@ -131,9 +137,19 @@ void setup() {
 
     // --- Motor + homing ---
     motor.begin();
+
+    Debug.println("Initializing TOF sensor...");
+    if (!tofSensor.begin()) {
+        Debug.println("CRITICAL: TOF sensor init failed");
+        ledController.setState(LEDState::ERROR);
+        while (true) { ledController.update(); yield(); }
+    }
+    tofSensor.setActiveZones(TOF_ACTIVE_ZONES, TOF_ACTIVE_ZONE_COUNT);
+    Debug.println("TOF sensor ready");
+
     //motor_selftest();
     Debug.println("Starting motor homing...");
-    if (!motor.home()) {
+    if (!motionController.homeWithTof()) {
         Debug.println("CRITICAL: motor homing failed");
         ledController.setState(LEDState::ERROR);
         while (true) { ledController.update(); yield(); }
@@ -151,16 +167,7 @@ void setup() {
 // ---------------------------------------------------------------------------
 void loop() {
     ledController.update();
-
-    // Safety net: catch accidental endstop hits while the motor is idle
-    if (motor.stepper.distanceToGo() == 0 && !motor.emergencyStop()) {
-        motor.processEndstops(/*isHoming=*/false);
-        if (motor.emergencyStop()) {
-            Debug.println("WARNING: endstop triggered while motor was idle");
-            // handleEndstopHit is private; re-home to recover to a known state
-            ledController.setState(LEDState::ERROR);
-        }
-    }
+    motionController.serviceEmergencyStop();
 
     // -----------------------------------------------------------------------
     switch (g_status) {
@@ -219,7 +226,7 @@ void loop() {
     {
         bool ack = g_autoCommitted ? true : comms.sendMessage(CMD1_ACK, 1000);
 
-        if (ack) {
+        if (ack && motionController.motionAllowed()) {
             Debug.println("Profile: starting");
             profileManager.resetEEPROM();
 
@@ -231,7 +238,7 @@ void loop() {
             Debug.println("Phase 2: Ascent to surface");
             profileManager.measure(TARGET_SURFACE, 3.0f, TIMEOUT_ASCENT);
 
-            motor.stepper.disableOutputs();
+            motor.disableOutputs();
             g_profileCount++;
             Debug.printf("Profile %d complete\n", g_profileCount);
         }
@@ -253,11 +260,7 @@ void loop() {
     case CMD_BALANCE: // Drive syringe to full extension then retraction
     {
         if (comms.sendMessage(CMD3_ACK, 1000)) {
-            Debug.println("Balance: extending");
-            motor.moveTo(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
-            delay(5000);
-            Debug.println("Balance: retracting");
-            motor.moveTo(MOTOR_ENDSTOP_MARGIN);
+            motionController.balance(5000);
         }
         g_status = CMD_IDLE;
         break;
@@ -355,24 +358,7 @@ void loop() {
     {
         if (comms.sendMessage(CMD10_ACK, 1000)) {
             long steps = comms.lastCommand().steps;
-            Debug.printf("Test: moving %ld steps at %u steps/s\n", steps, g_testSpeed);
-
-            motor.stepper.setMaxSpeed(g_testSpeed);
-            motor.stepper.setAcceleration(g_testSpeed);
-            motor.stepper.enableOutputs();
-            motor.stepper.move(steps);
-
-            while (motor.stepper.distanceToGo() != 0) {
-                motor.stepper.run();
-                ledController.update();
-                yield();
-            }
-
-            // Restore normal operating speed
-            motor.stepper.setMaxSpeed(MOTOR_MAX_SPEED);
-            motor.stepper.setAcceleration(MOTOR_MAX_SPEED);
-            motor.stepper.disableOutputs();
-            Debug.printf("Test complete — pos %ld\n", motor.position());
+            motionController.manualStepTest(steps, g_testSpeed);
         }
         g_status = CMD_IDLE;
         break;
@@ -395,7 +381,7 @@ void loop() {
     {
         if (comms.sendMessage(CMD12_ACK, 1000)) {
             Debug.println("Remote homing requested");
-            if (!motor.home()) {
+            if (!motionController.homeWithTof()) {
                 Debug.println("ERROR: remote homing failed");
                 ledController.setState(LEDState::ERROR);
             } else {
