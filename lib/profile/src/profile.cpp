@@ -2,6 +2,7 @@
 #include "config.h"
 #include "led.h"
 #include "motor.h"
+#include "motion_control.h"
 #include "pid.h"
 #include "sensors.h"
 #include "comms.h"
@@ -85,7 +86,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         if (!isPIDPhase) {
             if (!motorCommanded) {
                 if (isBottomTarget) {
-                    motor.moveTo(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
+                    motionController.moveToMax();
                 } else {
                     motor.moveTo(MOTOR_ENDSTOP_MARGIN); // Surface
                 }

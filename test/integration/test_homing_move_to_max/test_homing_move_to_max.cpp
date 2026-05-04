@@ -47,8 +47,8 @@ void test_homing_then_move_to_max() {
     );
 
     TEST_ASSERT_TRUE_MESSAGE(
-        motor.moveTo(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN),
-        "moveTo(MAX) failed after homing"
+        motionController.moveToMax(),
+        "moveToMax failed after homing"
     );
 
     TEST_ASSERT_EQUAL(

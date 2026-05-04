@@ -144,6 +144,56 @@ bool MotionController::moveToWithTimeout(long targetPosition, uint32_t timeoutMs
     return success;
 }
 
+bool MotionController::moveToMax(uint32_t timeoutMs) {
+    if (!motionAllowed()) {
+        return false;
+    }
+
+    if (!_motor.isPositionKnown()) {
+        emergencyStop("moveToMax requested before motor position is known");
+        return false;
+    }
+
+    const long targetPosition = static_cast<long>(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
+    const float tofStopDistanceMm = TOF_MAX_STOP_DISTANCE_CM * 10.0f;
+    const bool tofStopEnabled = tofStopDistanceMm > 0.0f && _tof.isInitialized();
+
+    _motor.enableOutputs();
+    _motor.startMoveTo(targetPosition);
+
+    const unsigned long startMs = millis();
+    unsigned long lastTofSampleMs = 0;
+
+    while (_motor.distanceToGo() != 0) {
+        if (timeoutMs > 0 && millis() - startMs > timeoutMs) {
+            emergencyStop("moveToMax timeout");
+            return false;
+        }
+
+        _motor.run();
+
+        const unsigned long nowMs = millis();
+        if (tofStopEnabled && nowMs - lastTofSampleMs >= MOTOR_HOMING_TOF_PERIOD_MS) {
+            lastTofSampleMs = nowMs;
+
+            float distanceMm = 0.0f;
+            if (_tof.readActiveMinDistanceMm(distanceMm) && distanceMm >= tofStopDistanceMm) {
+                Debug.printf("moveToMax: TOF stop reached (%.1f >= %.1f mm)\n",
+                             distanceMm,
+                             tofStopDistanceMm);
+                _motor.stop();
+                break;
+            }
+        }
+
+        ledController.update();
+        yield();
+    }
+
+    _motor.disableOutputs();
+    return true;
+}
+
 bool MotionController::manualStepTest(long steps, uint32_t speed) {
     if (!motionAllowed()) {
         return false;
@@ -174,7 +224,7 @@ bool MotionController::balance(uint32_t holdMs) {
     }
 
     Debug.println("Balance: extending");
-    if (!moveToWithTimeout(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN, 0)) {
+    if (!moveToMax()) {
         return false;
     }
 

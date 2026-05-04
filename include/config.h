@@ -49,6 +49,7 @@ constexpr uint16_t MOTOR_ENDSTOP_WINDOW  = 20;
 constexpr uint8_t  TOF_LPN_PIN           = 16;    // Low Power eNable pin
 constexpr uint8_t  TOF_I2C_RST_PIN       = 15;    // I2C reset pin
 constexpr float    TOF_HOMING_THRESHOLD  = 50.0f; // Distance threshold for homing (mm)
+constexpr float    TOF_MAX_STOP_DISTANCE_CM = 0.0f; // Max-extension TOF stop distance (cm, <=0 disabled until calibrated)
 constexpr uint8_t  TOF_ACTIVE_ZONES[]    = {5, 6, 9, 10}; // Central 4 zones in 4x4 mode
 constexpr uint8_t  TOF_ACTIVE_ZONE_COUNT = sizeof(TOF_ACTIVE_ZONES) / sizeof(TOF_ACTIVE_ZONES[0]);
 

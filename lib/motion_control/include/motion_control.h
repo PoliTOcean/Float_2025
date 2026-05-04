@@ -17,6 +17,7 @@ public:
 
     bool homeWithTof();
     bool waitForMotor(uint32_t timeoutMs);
+    bool moveToMax(uint32_t timeoutMs = 0);
     bool moveToWithTimeout(long targetPosition, uint32_t timeoutMs);
     bool manualStepTest(long steps, uint32_t speed);
     bool balance(uint32_t holdMs);
@@ -32,3 +33,6 @@ private:
     TofSensor& _tof;
     bool _emergencyStop = false;
 };
+
+// Singleton defined by the main firmware.
+extern MotionController motionController;
