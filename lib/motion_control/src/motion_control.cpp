@@ -90,6 +90,7 @@ bool MotionController::homeWithTof() {
                     Debug.printf("Motor homing: threshold reached (%.1f < %.1f mm)\n",
                                  distanceMm, TOF_HOMING_THRESHOLD);
                     homeDetected = true;
+                    _motor.stop();
                 }
             }
         }

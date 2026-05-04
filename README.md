@@ -568,7 +568,7 @@ sequenceDiagram
   - PID Controller (pid.cpp/h)
   - Profile Manager (profile.cpp/h)
   - LED Controller (led.cpp/h)
-- **AccelStepper Integration**: Enhanced motor control with acceleration, precise positioning, and non-blocking operation
+- **FastAccelStepper Integration**: Timer/task-driven motor control with acceleration, precise positioning, and non-blocking operation
 - **TOF-Based Homing**: Replaced mechanical endstops with optical distance sensing
 - **Motor Homing**: Comprehensive homing sequence with timeout protection and safety margins
 - **Enhanced PID Control**: Tuned parameters for underwater operation with anti-windup protection
@@ -584,8 +584,8 @@ sequenceDiagram
 1. Configure GPIO pins (DIR, STEP, EN, SLEEP, RST)
 2. Set SLEEP = HIGH (driver awake)
 3. Set RST = HIGH (reset not asserted, active-low)
-4. Configure AccelStepper with setPinsInverted() first
-5. Then call setEnablePin() to avoid glitches
+4. Initialize FastAccelStepper engine and connect the STEP pin
+5. Configure DIR and low-active ENABLE pins before enabling outputs
 ```
 
 **TOF Sensor Configuration:**
@@ -613,7 +613,7 @@ sequenceDiagram
 **Development Tools:**
 - PlatformIO IDE: Modern embedded development platform
 - ESP32 Arduino Core: Framework for ESP32 development
-- AccelStepper Library: Non-blocking stepper motor control
+- FastAccelStepper Library: Timer/task-driven stepper motor control
 - VL53L7CX Library: Time-of-Flight sensor driver
 
 --------------------------------------------------------------------------
@@ -637,4 +637,3 @@ sequenceDiagram
 **Documentation Version:** 11.0.0  
 **Last Updated:** March 2026  
 **Team Contact:** PoliTOcean @ Politecnico di Torino
-

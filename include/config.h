@@ -41,7 +41,7 @@ constexpr uint32_t MOTOR_MAX_ACCELERATION = 1500;   // Normal acceleration/decel
 constexpr uint32_t MOTOR_HOMING_SPEED    = 1500;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
 constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
-constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 500; // TOF polling period during homing
+constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during homing
 // Endstop proximity window: only check endstop when within this many steps of it
 constexpr uint16_t MOTOR_ENDSTOP_WINDOW  = 20;
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include <AccelStepper.h>
+#include <FastAccelStepper.h>
 
 /*
  *******************************************************************************
@@ -22,7 +22,7 @@ class MotorController {
 public:
     MotorController();
 
-    // Configure motor driver pins and AccelStepper.
+    // Configure motor driver pins and FastAccelStepper.
     void begin();
 
     // Mark the current mechanical position as known.
@@ -47,14 +47,20 @@ public:
     void enableOutputs();
     void disableOutputs();
 
-    // Current position according to AccelStepper.
+    // Current position according to FastAccelStepper.
     long position();
 
 private:
-    AccelStepper _stepper;
+    FastAccelStepperEngine _engine;
+    FastAccelStepper* _stepper = nullptr;
     bool _positionKnown = false;
+    long _targetPosition = 0;
+    uint32_t _maxSpeed = 0;
+    int32_t _acceleration = 0;
 
     long _clampTarget(long targetPosition) const;
+    bool _isReady() const;
+    bool _startRawMoveTo(long targetPosition);
 };
 
 // Singleton
