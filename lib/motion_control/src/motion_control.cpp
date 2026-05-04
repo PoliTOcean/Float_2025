@@ -68,6 +68,7 @@ bool MotionController::homeWithTof() {
     _motor.startMoveSteps(-static_cast<long>(MOTOR_MAX_STEPS) * 2);
 
     const unsigned long startMs = millis();
+    unsigned long lastTofSampleMs = 0;
     bool homeDetected = false;
 
     while (_motor.distanceToGo() != 0 && !homeDetected) {
@@ -77,18 +78,22 @@ bool MotionController::homeWithTof() {
             return false;
         }
 
-        float distanceMm = 0.0f;
-        if (_tof.readActiveMinDistanceMm(distanceMm)) {
-            Debug.printf("Motor homing: TOF distance = %.1f mm\n", distanceMm);
+        _motor.run();
 
-            if (distanceMm < TOF_HOMING_THRESHOLD) {
-                Debug.printf("Motor homing: threshold reached (%.1f < %.1f mm)\n",
-                             distanceMm, TOF_HOMING_THRESHOLD);
-                homeDetected = true;
+        const unsigned long nowMs = millis();
+        if (nowMs - lastTofSampleMs >= MOTOR_HOMING_TOF_PERIOD_MS) {
+            lastTofSampleMs = nowMs;
+
+            float distanceMm = 0.0f;
+            if (_tof.readActiveMinDistanceMm(distanceMm)) {
+                if (distanceMm < TOF_HOMING_THRESHOLD) {
+                    Debug.printf("Motor homing: threshold reached (%.1f < %.1f mm)\n",
+                                 distanceMm, TOF_HOMING_THRESHOLD);
+                    homeDetected = true;
+                }
             }
         }
 
-        _motor.run();
         ledController.update();
         yield();
     }

@@ -37,7 +37,7 @@
 #include "motor.h"
 
 #ifndef TEST_DIRECTION_USE_TOF
-#define TEST_DIRECTION_USE_TOF 1
+#define TEST_DIRECTION_USE_TOF 0
 #endif
 
 MotorController motor;
@@ -54,7 +54,7 @@ MotionController motionController(motor, tofSensor);
 #endif
 
 constexpr float TEST_START_TRAVEL_MM = 10.0f;
-constexpr float TEST_DIRECTION_TRAVEL_MM = 5.0f;
+constexpr float TEST_DIRECTION_TRAVEL_MM = 25.0f;
 constexpr float TEST_TOF_MIN_DELTA_MM = 2.0f;
 constexpr uint8_t TEST_TOF_MIN_VALID_SAMPLES = 3;
 constexpr uint8_t TEST_TOF_MAX_SAMPLES = 7;

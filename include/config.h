@@ -29,7 +29,7 @@ constexpr uint8_t PIN_LED_B         = 5;    // Blue LED channel
 // ---------------------------------------------------------------------------
 constexpr uint16_t MOTOR_STEPS_PER_REV   = 200;   // Motor steps per revolution (motor specific 360/1.8)
 constexpr uint8_t  MOTOR_MICROSTEP       = 1;     // Microstepping (4 = quarter step)
-constexpr uint8_t  MOTOR_GEAR_RATIO      = 27;    // Gearbox ratio (motor specific)
+constexpr float    MOTOR_GEAR_RATIO      = 2.7f;  // Gearbox ratio (motor specific)
 constexpr float    MOTOR_LEAD_MM_PER_REV = 1.5f;  // Lead screw travel per output rev (mm)
 constexpr float    MOTOR_TRAVEL_MM       = 80.0f; // Total syringe travel (mm)
 constexpr float    MOTOR_STEPS_PER_MM    = (MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP *
@@ -37,17 +37,18 @@ constexpr float    MOTOR_STEPS_PER_MM    = (MOTOR_STEPS_PER_REV * MOTOR_MICROSTE
 constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
 																 MOTOR_STEPS_PER_MM + 0.5f);
 constexpr uint32_t MOTOR_MAX_SPEED       = 1500;  // Normal operating speed (steps/s)
-constexpr uint32_t MOTOR_MAX_ACCELERATION = 500;   // Normal acceleration/deceleration (steps/s^2)
+constexpr uint32_t MOTOR_MAX_ACCELERATION = 1500;   // Normal acceleration/deceleration (steps/s^2)
 constexpr uint32_t MOTOR_HOMING_SPEED    = 1500;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
-constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 10000;  // Homing timeout (ms)
+constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
+constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 500; // TOF polling period during homing
 // Endstop proximity window: only check endstop when within this many steps of it
 constexpr uint16_t MOTOR_ENDSTOP_WINDOW  = 20;
 
 // TOF (Time-of-Flight) sensor — VL53L7CX
 constexpr uint8_t  TOF_LPN_PIN           = 16;    // Low Power eNable pin
 constexpr uint8_t  TOF_I2C_RST_PIN       = 15;    // I2C reset pin
-constexpr float    TOF_HOMING_THRESHOLD  = 10.0f; // Distance threshold for homing (mm)
+constexpr float    TOF_HOMING_THRESHOLD  = 50.0f; // Distance threshold for homing (mm)
 constexpr uint8_t  TOF_ACTIVE_ZONES[]    = {5, 6, 9, 10}; // Central 4 zones in 4x4 mode
 constexpr uint8_t  TOF_ACTIVE_ZONE_COUNT = sizeof(TOF_ACTIVE_ZONES) / sizeof(TOF_ACTIVE_ZONES[0]);
 

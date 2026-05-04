@@ -22,7 +22,7 @@ void MotorController::begin() {
     digitalWrite(PIN_DRV_RST,   HIGH);
     digitalWrite(PIN_EN,        HIGH); // HIGH = disabled on DRV8825
 
-    _stepper.setPinsInverted(/*dir*/true, /*step*/false, /*enable*/true);
+    _stepper.setPinsInverted(/*dir*/false, /*step*/false, /*enable*/true);
     _stepper.setEnablePin(PIN_EN);
     _stepper.setMaxSpeed(MOTOR_MAX_SPEED);
     _stepper.setAcceleration(MOTOR_MAX_ACCELERATION);
