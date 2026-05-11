@@ -38,8 +38,6 @@
 #include "sensors.h"
 #include "comms.h"
 #include "profile.h"
-#include "imu.h"
-#include "nav_pid.h"
 
 // ---------------------------------------------------------------------------
 // State machine status codes
@@ -74,7 +72,6 @@ static uint32_t g_testSpeed       = MOTOR_MAX_SPEED;
 // Make debug_mode_active reachable by DebugSerial / comms (extern linkage)
 bool debug_mode_active = false;
 
-
 // Global instances of main classes
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
@@ -84,9 +81,6 @@ SensorManager sensors;
 PIDController pidController(PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT);
 ProfileManager profileManager;
 // CommsManager comms; // Uncomment if you need this instance here
-NavPIDController pitchPID(1.0, 0.1, 0.05, -100.0, 100.0, -20.0, 20.0); // Test values
-unsigned long lastNavTime = 0;
-
 // ---------------------------------------------------------------------------
 // SETUP
 // ---------------------------------------------------------------------------
@@ -121,9 +115,6 @@ void setup() {
     // show LED_ERROR if the hardware is not found.
     sensors.begin();
 
-    imu.begin();
-    pitchPID.reset();
-    lastNavTime = millis();
 
     // Two short green blinks to confirm both sensors are alive
     ledController.setState(LEDState::INIT);
@@ -292,7 +283,6 @@ void loop() {
     case CMD_SEND_PACKAGE: // Send a single live sensor snapshot
     {
         sensors.read();
-        imu.read();
 
         char packet[OUTPUT_LEN];
         snprintf(packet, OUTPUT_LEN,
@@ -300,14 +290,10 @@ void loop() {
                  "\"pressure\":\"%.2f\","
                  "\"depth\":\"%.2f\","
                  "\"temperature\":\"%.2f\","
-                 "\"roll\":\"%.2f\","
-                "\"pitch\":\"%.2f\","
-                "\"yaw\":\"%.2f\","
                  "\"mseconds\":\"%lu\"}",
                  sensors.pressure(),
                  sensors.depth(),
                  sensors.temperature(),
-                 imu.roll,imu.pitch,imu.yaw,
                  millis());
 
         comms.sendMessage(packet, 1000);
