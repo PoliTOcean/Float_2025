@@ -1,13 +1,14 @@
 #include "profile.h"
-#include "../config.h"
-#include "../led/led.h"
-#include "../motor/motor.h"
-#include "../pid/pid.h"
-#include "../sensors/sensors.h"
-#include "../comms/comms.h"
+#include "config.h"
+#include "led.h"
+#include "motor.h"
+#include "motion_control.h"
+#include "pid.h"
+#include "sensors.h"
+#include "comms.h"
 #include <EEPROM.h>
-#include <float_common.h>
-#include <DebugSerial.h>
+#include "float_common.h"
+#include "DebugSerial.h"
 
 /*
  *******************************************************************************
@@ -15,7 +16,6 @@
  *******************************************************************************
  */
 
-ProfileManager profileManager;
 
 ProfileManager::ProfileManager() {}
 
@@ -86,7 +86,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         if (!isPIDPhase) {
             if (!motorCommanded) {
                 if (isBottomTarget) {
-                    motor.moveTo(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
+                    motionController.moveToMax();
                 } else {
                     motor.moveTo(MOTOR_ENDSTOP_MARGIN); // Surface
                 }
@@ -155,8 +155,8 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     }
     // -----------------------------------------------------------------------
 
-    motor.stepper.stop();
-    motor.stepper.disableOutputs();
+    motor.stop();
+    motor.disableOutputs();
     Debug.println("Profile phase finished");
 }
 
