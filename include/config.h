@@ -29,27 +29,33 @@ constexpr uint8_t PIN_LED_B         = 5;    // Blue LED channel
 // ---------------------------------------------------------------------------
 constexpr uint16_t MOTOR_STEPS_PER_REV   = 200;   // Motor steps per revolution (motor specific 360/1.8)
 constexpr uint8_t  MOTOR_MICROSTEP       = 1;     // Microstepping (4 = quarter step)
-constexpr float    MOTOR_GEAR_RATIO      = 27.0f; // Gearbox ratio (motor turns per output turn)
-constexpr float    MOTOR_LEAD_MM_PER_REV = 1.5f;  // Lead screw travel per output rev (mm)
-constexpr float    MOTOR_TRAVEL_MM       = 80.0f; // Total syringe travel (mm)
-constexpr float    MOTOR_STEPS_PER_MM    = (MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP *
-										   MOTOR_GEAR_RATIO) / MOTOR_LEAD_MM_PER_REV;
+constexpr float    MOTOR_GEAR_RATIO      = 26.85124f; // Gearbox ratio (26 + 103/121)
+constexpr float    MOTOR_SCREW_PITCH_MM  = 2.0f;  // Distance between adjacent thread crests (mm)
+constexpr uint8_t  MOTOR_SCREW_STARTS    = 4;     // Number of thread starts/principles
+
+constexpr float MOTOR_SCREW_LEAD_MM =
+    MOTOR_SCREW_PITCH_MM * MOTOR_SCREW_STARTS;
+constexpr float MOTOR_REVS_PER_MM =
+    MOTOR_GEAR_RATIO / MOTOR_SCREW_LEAD_MM;
+constexpr float MOTOR_STEPS_PER_MM =
+    MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP * MOTOR_REVS_PER_MM;
+
+constexpr float    MOTOR_TRAVEL_MM       = 45.0f; // Total syringe travel (mm)
 constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
 																 MOTOR_STEPS_PER_MM + 0.5f);
-constexpr uint32_t MOTOR_MAX_SPEED       = 1500;  // Normal operating speed (steps/s)
-constexpr uint32_t MOTOR_MAX_ACCELERATION = 1500;   // Normal acceleration/deceleration (steps/s^2)
+constexpr uint32_t MOTOR_MAX_SPEED       = 1500;  // Normal operating speed (steps/s); tested stable up to 2140 steps/s
+constexpr uint32_t MOTOR_MAX_ACCELERATION = 1500;   // Normal acceleration/deceleration (steps/s^2); tested stable up to 2140 steps/s^2
 constexpr uint32_t MOTOR_HOMING_SPEED    = 1500;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
 constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
 constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during homing (ms)
 
-// TOF (Time-of-Flight) sensor — VL53L7CX
-constexpr uint8_t  TOF_LPN_PIN           = 16;    // Low Power eNable pin
-constexpr uint8_t  TOF_I2C_RST_PIN       = 15;    // I2C reset pin
-constexpr float    TOF_HOMING_THRESHOLD  = 50.0f; // Distance threshold for homing (mm)
+// TOF (Time-of-Flight) sensor - VL53L4CD
+constexpr uint8_t  TOF_XSHUT_PIN         = 16;    // Sensor shutdown pin
+constexpr uint8_t  TOF_GPIO1_PIN         = 15;    // Optional interrupt pin, unused in polling mode
+constexpr float    TOF_DISTANCE_OFFSET_MM = 24.0f; // Measured raw offset: raw distance - real distance
+constexpr float    TOF_HOMING_THRESHOLD  = 40.0f; // Distance threshold for homing (mm)
 constexpr float    TOF_MAX_STOP_DISTANCE_CM = 0.0f; // Max-extension TOF stop distance (cm, <=0 disabled until calibrated)
-constexpr uint8_t  TOF_ACTIVE_ZONES[]    = {5, 6, 9, 10}; // Central 4 zones in 4x4 mode
-constexpr uint8_t  TOF_ACTIVE_ZONE_COUNT = sizeof(TOF_ACTIVE_ZONES) / sizeof(TOF_ACTIVE_ZONES[0]);
 
 // ---------------------------------------------------------------------------
 // TIMING CONSTANTS  (ms unless noted)

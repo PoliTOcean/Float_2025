@@ -29,7 +29,7 @@
 
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
-TofSensor tofSensor(Wire, TOF_LPN_PIN, TOF_I2C_RST_PIN);
+TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
 
 void setUp() {}

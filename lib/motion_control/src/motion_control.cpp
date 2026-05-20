@@ -85,7 +85,7 @@ bool MotionController::homeWithTof() {
             lastTofSampleMs = nowMs;
 
             float distanceMm = 0.0f;
-            if (_tof.readActiveMinDistanceMm(distanceMm)) {
+            if (_tof.readDistanceMm(distanceMm)) {
                 if (distanceMm < TOF_HOMING_THRESHOLD) {
                     Debug.printf("Motor homing: threshold reached (%.1f < %.1f mm)\n",
                                  distanceMm, TOF_HOMING_THRESHOLD);
@@ -177,7 +177,7 @@ bool MotionController::moveToMax(uint32_t timeoutMs) {
             lastTofSampleMs = nowMs;
 
             float distanceMm = 0.0f;
-            if (_tof.readActiveMinDistanceMm(distanceMm) && distanceMm >= tofStopDistanceMm) {
+            if (_tof.readDistanceMm(distanceMm) && distanceMm >= tofStopDistanceMm) {
                 Debug.printf("moveToMax: TOF stop reached (%.1f >= %.1f mm)\n",
                              distanceMm,
                              tofStopDistanceMm);

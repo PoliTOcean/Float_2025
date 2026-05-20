@@ -6,10 +6,9 @@
  *
  * Procedure:
  *   1. Initialise the TOF sensor and motor controller.
- *   2. Configure the active TOF zones used for homing.
- *   3. Run TOF-based homing only.
- *   4. Check that the logical motor position is reset to 0.
- *   5. Read the TOF distance at home for diagnostic output.
+ *   2. Run TOF-based homing only.
+ *   3. Check that the logical motor position is reset to 0.
+ *   4. Read the TOF distance at home for failure diagnostics.
  *
  * Pass criteria:
  *   - The TOF sensor must initialise successfully.
@@ -30,7 +29,7 @@
 
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
-TofSensor tofSensor(Wire, TOF_LPN_PIN, TOF_I2C_RST_PIN);
+TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
 
 constexpr uint32_t TOF_HOME_SAMPLE_TIMEOUT_MS = 1500;
@@ -46,7 +45,7 @@ static bool readHomeTofMinDistanceMm(float& distanceMm) {
     const unsigned long startMs = millis();
 
     while (millis() - startMs < TOF_HOME_SAMPLE_TIMEOUT_MS) {
-        if (tofSensor.readActiveMinDistanceMm(distanceMm)) {
+        if (tofSensor.readDistanceMm(distanceMm)) {
             return true;
         }
 
@@ -58,17 +57,7 @@ static bool readHomeTofMinDistanceMm(float& distanceMm) {
 }
 
 void test_homing_only() {
-    Serial.println();
-    Serial.println("Homing-only test: initializing TOF");
     TEST_ASSERT_TRUE_MESSAGE(tofSensor.begin(), "TOF initialization failed");
-    TEST_ASSERT_TRUE_MESSAGE(
-        tofSensor.setActiveZones(TOF_ACTIVE_ZONES, TOF_ACTIVE_ZONE_COUNT),
-        "TOF active zone configuration failed"
-    );
-
-    Serial.printf("Homing-only test: threshold=%.1f mm, speed=%u steps/s\n",
-                  TOF_HOMING_THRESHOLD,
-                  MOTOR_HOMING_SPEED);
 
     const unsigned long startMs = millis();
     TEST_ASSERT_TRUE_MESSAGE(
@@ -77,17 +66,11 @@ void test_homing_only() {
     );
     const unsigned long durationMs = millis() - startMs;
 
-    Serial.printf("Homing-only test: homing duration=%lu ms, position=%ld steps\n",
-                  durationMs,
-                  motor.position());
-
     float homeDistanceMm = 0.0f;
     TEST_ASSERT_TRUE_MESSAGE(
         readHomeTofMinDistanceMm(homeDistanceMm),
         "TOF did not provide a valid home distance after homing"
     );
-
-    Serial.printf("Homing-only test: home TOF min distance=%.1f mm\n", homeDistanceMm);
 
     const long finalPosition = motor.position();
     char message[160];

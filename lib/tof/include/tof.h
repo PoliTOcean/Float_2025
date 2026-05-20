@@ -2,41 +2,46 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <vl53l7cx_class.h>
+#include <vl53l4cd_class.h>
 
 /*
  *******************************************************************************
  * tof.h
- * VL53L7CX Time-of-Flight sensor controller.
+ * VL53L4CD Time-of-Flight sensor controller.
  *******************************************************************************
  */
 
+struct TofMeasurement {
+    float distanceMm = 0.0f;
+    float rawDistanceMm = 0.0f;
+    uint8_t rangeStatus = 0;
+    uint16_t ambientRateKcps = 0;
+    uint16_t ambientPerSpadKcps = 0;
+    uint16_t signalRateKcps = 0;
+    uint16_t signalPerSpadKcps = 0;
+    uint16_t numberOfSpad = 0;
+    uint16_t sigmaMm = 0;
+    bool valid = false;
+};
+
 class TofSensor {
 public:
-    TofSensor(TwoWire& wire, uint8_t lpnPin, uint8_t resetPin);
+    TofSensor(TwoWire& wire, uint8_t xshutPin, uint8_t gpio1Pin);
 
     bool begin();
-    bool readCenterDistanceMm(float& distanceMm);
-    bool setActiveZones(const uint8_t* zones, uint8_t count);
-    bool readActiveDistanceMm(float& distanceMm);
-    bool readActiveMinDistanceMm(float& distanceMm);
+    bool readMeasurement(TofMeasurement& measurement);
+    bool readDistanceMm(float& distanceMm);
 
     bool isInitialized() const { return _initialized; }
 
 private:
-    static constexpr uint8_t MAX_ACTIVE_ZONES = VL53L7CX_RESOLUTION_4X4;
+    static constexpr uint32_t RANGE_TIMING_BUDGET_MS = 30;
+    static constexpr uint32_t RANGE_INTER_MEASUREMENT_MS = 0;
 
-    bool _readData(VL53L7CX_ResultsData& data);
-    bool _isValidZoneReading(const VL53L7CX_ResultsData& data, uint8_t zone) const;
-    uint8_t _collectActiveDistances(const VL53L7CX_ResultsData& data,
-                                    float* distances,
-                                    uint8_t maxCount) const;
+    bool _isValidResult(const VL53L4CD_Result_t& result) const;
 
     TwoWire& _wire;
-    uint8_t _lpnPin;
-    uint8_t _resetPin;
-    VL53L7CX _sensor;
+    uint8_t _xshutPin;
+    VL53L4CD _sensor;
     bool _initialized = false;
-    uint8_t _activeZones[MAX_ACTIVE_ZONES] = {5, 6, 9, 10};
-    uint8_t _activeZoneCount = 4;
 };

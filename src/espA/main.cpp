@@ -10,7 +10,7 @@
  *   config.h              — pin definitions, tuning constants
  *   led/led.h             — RGB LED state machine
  *   motor/motor.h         — stepper motor controller
- *   tof/tof.h             — VL53L7CX Time-of-Flight sensor controller
+ *   tof/tof.h             - VL53L4CD Time-of-Flight sensor controller
  *   motion_control.h      — homing, safe movement, and emergency stop
  *   pid/pid.h             — depth PID controller
  *   sensors/sensors.h     — Bar02 pressure sensor + INA219 power monitor
@@ -75,7 +75,7 @@ bool debug_mode_active = false;
 // Global instances of main classes
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
-TofSensor tofSensor(Wire, TOF_LPN_PIN, TOF_I2C_RST_PIN);
+TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
 SensorManager sensors;
 PIDController pidController(PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT);
@@ -135,7 +135,6 @@ void setup() {
         ledController.setState(LEDState::ERROR);
         while (true) { ledController.update(); yield(); }
     }
-    tofSensor.setActiveZones(TOF_ACTIVE_ZONES, TOF_ACTIVE_ZONE_COUNT);
     Debug.println("TOF sensor ready");
 
     //motor_selftest();

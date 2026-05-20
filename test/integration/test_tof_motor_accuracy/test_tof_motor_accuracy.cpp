@@ -2,11 +2,11 @@
  *******************************************************************************
  * TOF / motor accuracy integration test
  *
- * This test verifies that the VL53L7CX distance reading tracks the stepper motor
+ * This test verifies that the VL53L4CD distance reading tracks the stepper motor
  * position after a real TOF-based homing sequence.
  *
  * Procedure:
- *   1. Initialise the TOF sensor, motor, and configured active TOF zones.
+ *   1. Initialise the TOF sensor and motor.
  *   2. Run homing and assert that the motor reference position becomes 0.
  *   3. Read a stable TOF baseline at home and check it is close to the homing
  *      threshold.
@@ -34,7 +34,7 @@
 
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
-TofSensor tofSensor(Wire, TOF_LPN_PIN, TOF_I2C_RST_PIN);
+TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
 
 constexpr float TOF_HOME_TOLERANCE_MM = 5.0f;
@@ -70,7 +70,7 @@ static bool readStableTofDistanceMm(float& distanceMm) {
 
     while (millis() - startMs < TOF_SAMPLE_TIMEOUT_MS && count < TOF_MAX_SAMPLES) {
         float sampleMm = 0.0f;
-        if (tofSensor.readActiveDistanceMm(sampleMm)) {
+        if (tofSensor.readDistanceMm(sampleMm)) {
             samples[count++] = sampleMm;
         }
         delay(TOF_SAMPLE_PERIOD_MS);
@@ -125,10 +125,6 @@ static void assertTofMatchesMotorTravel(float homeDistanceMm, float travelMm) {
 
 void test_tof_distance_matches_motor_position_after_homing() {
     TEST_ASSERT_TRUE_MESSAGE(tofSensor.begin(), "TOF initialization failed");
-    TEST_ASSERT_TRUE_MESSAGE(
-        tofSensor.setActiveZones(TOF_ACTIVE_ZONES, TOF_ACTIVE_ZONE_COUNT),
-        "TOF active zone configuration failed"
-    );
 
     TEST_ASSERT_TRUE_MESSAGE(
         motionController.homeWithTof(),
@@ -153,13 +149,12 @@ void test_tof_distance_matches_motor_position_after_homing() {
     );
 
     const float testTravelMm[] = {
-        5.0f,   // About 1.5 cm absolute distance if home is near 1 cm.
-        10.0f,  // About 2 cm.
-        20.0f,  // About 3 cm.
-        30.0f,  // About 4 cm.
-        40.0f,  // About 5 cm.
-        60.0f,  // About 7 cm.
-        75.0f   // About 8.5 cm, close to the 80 mm travel limit.
+        5.0f,
+        10.0f,
+        20.0f,
+        30.0f,
+        40.0f,
+        44.0f
     };
 
     for (float travelMm : testTravelMm) {

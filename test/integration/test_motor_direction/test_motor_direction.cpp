@@ -49,7 +49,7 @@ MotorController motor;
 #include "tof.h"
 
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
-TofSensor tofSensor(Wire, TOF_LPN_PIN, TOF_I2C_RST_PIN);
+TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
 #endif
 
@@ -100,7 +100,7 @@ static bool readStableTofDistanceMm(float& distanceMm) {
     while (millis() - startMs < TEST_TOF_SAMPLE_TIMEOUT_MS &&
            count < TEST_TOF_MAX_SAMPLES) {
         float sampleMm = 0.0f;
-        if (tofSensor.readActiveDistanceMm(sampleMm)) {
+        if (tofSensor.readDistanceMm(sampleMm)) {
             samples[count++] = sampleMm;
         }
         delay(TEST_TOF_SAMPLE_PERIOD_MS);
@@ -125,10 +125,6 @@ static bool readStableTofDistanceMm(float& distanceMm) {
 void test_positive_and_negative_motor_direction() {
 #if TEST_DIRECTION_USE_TOF
     TEST_ASSERT_TRUE_MESSAGE(tofSensor.begin(), "TOF initialization failed");
-    TEST_ASSERT_TRUE_MESSAGE(
-        tofSensor.setActiveZones(TOF_ACTIVE_ZONES, TOF_ACTIVE_ZONE_COUNT),
-        "TOF active zone configuration failed"
-    );
     TEST_ASSERT_TRUE_MESSAGE(
         motionController.homeWithTof(),
         "TOF-based homing failed"
