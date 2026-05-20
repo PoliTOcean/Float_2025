@@ -1,39 +1,42 @@
 # PoliTOcean Float 2025 - Technical Documentation
 
-**Version:** 11.0.0  
+**Version:** 11.1.0
 **Team:** PoliTOcean @ Politecnico di Torino  
 **Competition:** MATE ROV 2025/26
 
 --------------------------------------------------------------------------
 
-## 📋 TABLE OF CONTENTS
+## TABLE OF CONTENTS
 
-1. [Project Overview](#-project-overview)
-   - [Introduction & Requirements](#introduction-and-requirements)
+1. [Project Overview](#project-overview)
+   - [Introduction and Requirements](#introduction-and-requirements)
    - [System Behavior](#system-behavior)
-2. [Hardware Configuration](#-hardware-configuration)
+2. [Hardware Configuration](#hardware-configuration)
+   - [Hardware Used](#hardware-used)
    - [Pin Mapping](#pin-mapping)
-   - [I2C Devices](#i2c-device-addresses)
-3. [System Architecture](#-system-architecture)
+   - [I2C Device Addresses](#i2c-device-addresses)
+3. [System Architecture](#system-architecture)
    - [Deployment Diagram](#deployment-diagram)
    - [Software Structure](#software-structure)
    - [ESPA State Machine](#espa-state-machine)
-4. [Communication Protocol](#-communication-protocol)
+4. [Communication Protocol](#communication-protocol)
    - [Command Lifecycle](#command-lifecycle)
    - [ESPB Bridge Role](#espb-bridge-role)
-   - [Command Reference](#float-commands)
-   - [Status Responses](#status-command-espb-response)
-5. [LED Status Indicators](#-led-status-indicators)
-6. [Project Updates](#-project-updates)
-   - [Hardware Changes](#hardware-changes)
-   - [TOF Homing System](#tof-homing-system)
-   - [Technical Details](#technical-details)
-7. [Utilities & Resources](#-utilities-and-resources)
-8. [Glossary](#-glossary)
+   - [FLOAT Commands](#float-commands)
+   - [STATUS Command: ESPB Response](#status-command-espb-response)
+5. [LED Status Indicators](#led-status-indicators)
+6. [Development and Testing](#development-and-testing)
+   - [PlatformIO Environments](#platformio-environments)
+   - [Avvio da CLI](#avvio-da-cli)
+   - [Test da CLI](#test-da-cli)
+   - [Controllo manuale del solo motore](#controllo-manuale-del-solo-motore)
+   - [Test Layout](#test-layout)
+7. [Utilities and Resources](#utilities-and-resources)
+8. [Glossary](#glossary)
 
 --------------------------------------------------------------------------
 
-## 🎯 PROJECT OVERVIEW
+## PROJECT OVERVIEW
 
 ### Introduction and Requirements
 
@@ -69,6 +72,8 @@ The FLOAT must complete **two vertical profiles** using a buoyancy engine (fluid
 - CS GUI plots depth over time using received data (minimum 20 data packets required)
 - Graph must display time (X-axis) vs depth (Y-axis) for both completed profiles
 
+**Current firmware storage note:** the active implementation stores compact profile records in ESP32 EEPROM (`pressure`, `temperature`) every `PERIOD_EEPROM_WRITE` (5 s) and serializes them as JSON packets when requested. The legacy serial command name is still `CLEAR_SD`, but it currently clears the EEPROM profile buffer.
+
 **Auto Mode (AM):**
 
 An autonomous operating mode that triggers profile execution in case of connection loss with the CS, ensuring mission completion if communication is temporarily unavailable. AM will autonomously commit up to two profiles when connection is lost, preventing incomplete missions due to transient WiFi failures.
@@ -81,11 +86,23 @@ An autonomous operating mode that triggers profile execution in case of connecti
 
 The general idea is that the FLOAT provides some micro-services that the CS can activate by sending commands to it. Every command can be requested at any moment, with the only limit that a command can be accepted by the FLOAT only when the previous one has been completed (more info on command cycle later). 
 
-The FLOAT has two main logical states: the command execution one, and the idle one in which it waits for the new command. In idle state, the FLOAT can have some data from last completed profile that can be sent to the CS.
+The FLOAT has two main logical states: the command execution one, and the idle one in which it waits for the new command. In idle state, the FLOAT can have buffered EEPROM data from the last completed profile that can be sent to the CS.
 
 --------------------------------------------------------------------------
 
-## 🔧 HARDWARE CONFIGURATION
+## HARDWARE CONFIGURATION
+
+### Hardware Used
+
+| Hardware | Role | Link | Key parameters / notes |
+|:---------|:-----|:-----|:-----------------------|
+| ESP32 Dev Module x2 | ESPA float controller and ESPB communication bridge | [Espressif ESP32](https://documentation.espressif.com/esp32-wroom-32e_esp32-wroom-32ue_datasheet_en.pdf) | Arduino framework, ESP-NOW link, USB serial bridge on ESPB |
+| DRV8825 stepper driver | Stepper motor driver for syringe motion | [Pololu DRV8825 carrier](https://www.pololu.com/product/2133) | STEP/DIR control, active-low enable, SLEEP and RESET held HIGH during operation |
+| Stepper motor with planetary gearbox | Syringe actuator motor | [StepperOnline 17HS15-1684S-PG27](https://www.omc-stepperonline.com/it/nema-17-motore-passo-passo-bipolare-l-38mm-w-rapporto-di-riduzione-27-1-riduttore-epicicloidale-17hs15-1684s-pg27) | NEMA 17, 200 steps/rev, 1.8 deg/step, configured gear ratio 26.85124:1, microstep setting 1 |
+| Lead screw / threaded rod | Converts motor rotation to linear travel | [SIENOC 500 mm trapezoidal lead screw](https://www.amazon.it/SIENOC-500mm-Stampante-Trapezoidale-Piombo/dp/B078K7KN8W/) | Pitch 2.0 mm, 4 starts, lead 8.0 mm/rev, configured travel 45 mm |
+| VL53L4CD Time-of-Flight sensor | Non-contact homing distance sensor | [ST VL53L4CD](https://www.st.com/en/imaging-and-photonics-solutions/vl53l4cd.html) | I2C 0x29, XSHUT GPIO16, GPIO1 GPIO15, 24 mm offset, 40 mm homing threshold |
+| Bar02 pressure sensor | Pressure/depth measurement | [Blue Robotics Bar02](https://bluerobotics.com/store/sensors-cameras/sensors/bar02-sensor-r1/) | MS5837_02BA model, I2C 0x76, used for depth and pressure |
+| INA219 battery monitor | Battery bus-voltage monitor | [Adafruit INA219 breakout](https://www.adafruit.com/product/904) | I2C 0x40, initialized at 100 kHz, configured with 5 A max and 0.1 ohm shunt |
 
 ### Pin Mapping
 
@@ -100,10 +117,10 @@ The FLOAT has two main logical states: the command execution one, and the idle o
 | SLEEP | GPIO25 | DRV8825 Sleep | Active-LOW, must be HIGH for operation |
 | RST | GPIO26 | DRV8825 Reset | Active-LOW, must be HIGH for operation |
 | **TOF Sensor** ||||
-| SDA | GPIO21 | VL53L7CX I2C Data | I2C bus (shared with sensors) |
-| SCL | GPIO22 | VL53L7CX I2C Clock | I2C bus @ 1MHz |
-| LPN | GPIO16 | VL53L7CX Power | Low Power Enable |
-| I2C_RST | GPIO15 | VL53L7CX Reset | Hardware reset control |
+| SDA | GPIO21 | VL53L4CD I2C Data | I2C bus (shared with sensors) |
+| SCL | GPIO22 | VL53L4CD I2C Clock | I2C bus @ 1MHz |
+| XSHUT | GPIO16 | VL53L4CD Shutdown | Sensor shutdown control |
+| GPIO1 | GPIO15 | VL53L4CD Interrupt | Optional interrupt pin, unused in polling mode |
 | **Sensors** ||||
 | SDA | GPIO21 | Bar02, INA219 | I2C bus (shared) |
 | SCL | GPIO22 | Bar02, INA219 | I2C bus (shared) |
@@ -126,13 +143,15 @@ The FLOAT has two main logical states: the command execution one, and the idle o
 
 | Device | Address | Bus Speed |
 |:-------|:-------:|:---------|
-| VL53L7CX TOF | 0x29 | 1 MHz |
-| Bar02 Pressure | 0x76 | 100 kHz |
-| INA219 Battery | 0x40 | 100 kHz |
+| VL53L4CD TOF | 0x29 | 1 MHz |
+| Bar02 Pressure | 0x76 | Shared I2C bus |
+| INA219 Battery | 0x40 | Initialized at 100 kHz |
+
+> The firmware initializes the INA219 at 100 kHz, then the VL53L4CD driver raises the shared `Wire` clock to 1 MHz for TOF ranging.
 
 --------------------------------------------------------------------------
 
-## 🏗️ SYSTEM ARCHITECTURE
+## SYSTEM ARCHITECTURE
 
 ### Deployment Diagram
 
@@ -160,7 +179,7 @@ graph TB
         subgraph "Motor System"
             DRV8825[DRV8825 Driver]
             STEPPER[Stepper Motor]
-            TOF[VL53L7CX TOF Sensor]
+            TOF[VL53L4CD TOF Sensor]
         end
         
         subgraph "Sensors"
@@ -198,12 +217,16 @@ graph TB
 ### Software Structure
 
 The project follows a modular architecture with separate compilation units:
-- **Motor Control** (motor.cpp/h) - Stepper motor control and TOF homing
-- **Communication** (comms.cpp/h) - ESP-NOW wireless protocol  
-- **Sensors** (sensors.cpp/h) - Bar02, INA219 sensor management
-- **PID Controller** (pid.cpp/h) - Depth control algorithm
-- **Profile Manager** (profile.cpp/h) - Mission profile execution
-- **LED Controller** (led.cpp/h) - Status indication system
+- **Central Config** (`include/config.h`) - pin mapping, motor constants, PID defaults, mission timing, network parameters
+- **Shared Protocol** (`include/float_common.h`) - ESP-NOW packet structs, ACK strings, EEPROM size, shared LED enum
+- **Motor Control** (`lib/motor`) - DRV8825/FastAccelStepper setup, position tracking, bounded movement primitives
+- **TOF Sensor** (`lib/tof`) - VL53L4CD initialization, corrected distance readings, and raw measurement metadata
+- **Motion Control** (`lib/motion_control`) - TOF homing, safe max-extension move, balance routine, emergency stop handling
+- **Communication** (`lib/comms`) - ESP-NOW wireless protocol and ElegantOTA session management
+- **Sensors** (`lib/sensors`) - Bar02 pressure/depth and INA219 battery monitoring
+- **PID Controller** (`lib/pid`) - depth control algorithm with runtime gain updates
+- **Profile Manager** (`lib/profile`) - mission profile execution and EEPROM-backed profile logging
+- **LED Controller** (`lib/led`) - RGB status indication system
 
 ### ESPA State Machine
 
@@ -225,6 +248,12 @@ stateDiagram-v2
     EXECUTING --> PROFILE: GO Command
     EXECUTING --> BALANCE: BALANCE Command
     EXECUTING --> SEND_DATA: LISTENING Command
+    EXECUTING --> CLEAR_DATA: CLEAR_SD Command
+    EXECUTING --> UPDATE_PID: PARAMS Command
+    EXECUTING --> TEST_SPEED: TEST_FREQ Command
+    EXECUTING --> TEST_STEPS: TEST_STEPS Command
+    EXECUTING --> DEBUG_MODE: DEBUG Command
+    EXECUTING --> HOMING: HOME_MOTOR Command
     EXECUTING --> OTA: TRY_UPLOAD Command
     
     PROFILE --> PID_CONTROL: Descending
@@ -234,6 +263,11 @@ stateDiagram-v2
     
     BALANCE --> IDLE: Balance Complete
     SEND_DATA --> IDLE: Data Sent
+    CLEAR_DATA --> IDLE: EEPROM Cleared
+    UPDATE_PID --> IDLE: Gains Updated
+    TEST_SPEED --> IDLE: Speed Stored
+    TEST_STEPS --> IDLE: Test Move Complete
+    DEBUG_MODE --> IDLE: Debug Toggle Complete
     OTA --> IDLE: Upload Complete
     
     IDLE_W_DATA --> SENDING: LISTENING Command
@@ -257,14 +291,14 @@ stateDiagram-v2
     end note
     
     note right of ERROR
-        RGB: Red Fast Blink
+        RGB: Red Blink
         Fatal error state
     end note
 ```
 
 --------------------------------------------------------------------------
 
-## 📡 COMMUNICATION PROTOCOL
+## COMMUNICATION PROTOCOL
 
 ### Command Lifecycle
 
@@ -274,7 +308,7 @@ If the acknowledgement doesn't arrive within that time span, the command commit 
 
 When waiting for the command commit acknowledgement, other command requests will be ignored as well.   
 
-As already mentioned, after command completion the FLOAT will try to send an idle acknowledgement to signal that it is listening for a new command: together with the idle state, this acknowledgement can also inform about the presence of new data on the microSD that has to be sent to the CS. After an idle acknowledgement is received, a new command can be accepted.    
+As already mentioned, after command completion the FLOAT will try to send an idle acknowledgement to signal that it is listening for a new command: together with the idle state, this acknowledgement can also inform about the presence of new EEPROM-buffered profile data that has to be sent to the CS. After an idle acknowledgement is received, a new command can be accepted.
 
 To maintain consistency with the status stored on the ESPB, and hence with the GUI visuals, the FLOAT grants to send the acknowledgement signalling a command commit only when the commit can be given for sure. In the same way, if the acknowledgement fails to be sent due to connection issues, the command is not committed.
 
@@ -358,16 +392,21 @@ sequenceDiagram
 
 Table of FLOAT commands with relative effects and acknowledgements:
 
-|    Cmd string    | Cmd ESPA number | Cmd effects                                                                                                                                       |      ESPA ack string      |      ESPA ack effects on ESPB state       |
-| :--------------: | :-------------: | ------------------------------------------------------------------------------------------------------------------------------------------------- | :-----------------------: | :---------------------------------------: |
-|        GO        |        1        | Performs a profile in which measures depth and pressure and saves them to microSD                                                                 |         GO_RECVD          |    status to 2 (command execution)<br>    |
-|    LISTENING     |        2        | Requests data from last profile. If connection drops during sending, data is lost                                                                 |    Ack is data itself     |  status to 2 after first package arrival  |
-|     BALANCE      |        3        | Moves the syringes all the way down: useful after pressure test, during which external pressure push syringes up                                |        CMD3_RECVD         |                status to 2                |
-|     CLEAR_SD     |        4        | Clears data file on microSD                                                                                                                       |        CMD4_RECVD         |                status to 2                |
-| SWITCH_AUTO_MODE |        5        | Toggles FLOAT Auto Mode <br>                                                                                                                      |      SWITCH_AM_RECVD      | status to 2 , AM activation state toggled |
-|   SEND_PACKAGE   |        6        | Requests a single test package to print on the GUI<br>                                                                                            | Ack is the package itself |                status to 2                |
-|    TRY_UPLOAD    |        7        | Requests to activate the Elegant OTA server on the ESPA for OTA firmware uploading. After the upload FLOAT restarts                               |     TRY_UPLOAD_RECVD      |              status to 2<br>              |
-|      STATUS      |        -        | Requests stale status to ESPB. It will respond with a status string containing FLOAT state, WiFi connection state and AM current activation state |             -             |                     -                     |
+|    Cmd string    | Cmd ESPA number | Cmd effects                                                                                                                                                     |       ESPA ack string       |      ESPA ack effects on ESPB state       |
+| :--------------: | :-------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------: | :---------------------------------------: |
+|        GO        |        1        | Performs a profile, measures pressure/depth, and stores compact records in EEPROM                                                                                 |          GO_RECVD           |    status to 2 (command execution)<br>    |
+|    LISTENING     |        2        | Streams the last EEPROM-backed profile as JSON packets, followed by `STOP_DATA`. Data remains available until cleared or overwritten by a new profile            |     Ack is data itself      |  status to 2 after first package arrival  |
+|     BALANCE      |        3        | Extends the syringe to the safe maximum, holds for 5 s, then retracts to the safe margin                                                                          |         CMD3_RECVD          |                status to 2                |
+|     CLEAR_SD     |        4        | Clears the EEPROM profile buffer. The command string is kept as `CLEAR_SD` for compatibility                                                                      |         CMD4_RECVD          |                status to 2                |
+| SWITCH_AUTO_MODE |        5        | Toggles FLOAT Auto Mode                                                                                                                                          |       SWITCH_AM_RECVD       | status to 2, AM activation state toggled  |
+|   SEND_PACKAGE   |        6        | Sends a single live JSON snapshot containing company number, pressure, depth, temperature, and milliseconds                                                       |  Ack is the package itself  |                status to 2                |
+|    TRY_UPLOAD    |        7        | Starts the ElegantOTA access point on ESPA for a 5-minute upload window, then restores ESP-NOW                                                                    |       TRY_UPLOAD_RECVD      |                status to 2                |
+| `PARAMS kp ki kd` |        8        | Updates PID gains at runtime                                                                                                                                    |      CHNG_PARMS_RECVD       |                status to 2                |
+| `TEST_FREQ freq` |        9        | Sets manual test movement speed, clamped to 10-1200 steps/s                                                                                                      |       TEST_FREQ_RECVD       |                status to 2                |
+| `TEST_STEPS n`   |       10        | Moves the motor by `n` relative steps at the current test speed                                                                                                  |      TEST_STEPS_RECVD       |                status to 2                |
+|      DEBUG       |       11        | Toggles remote debug forwarding through `DebugSerial`                                                                                                            |      DEBUG_MODE_RECVD       |                status to 2                |
+|    HOME_MOTOR    |       12        | Runs TOF-based homing remotely                                                                                                                                   |          HOME_RECVD         |                status to 2                |
+|      STATUS      |        -        | Requests stale ESPB status plus AM state, WiFi connection state, battery millivolts, and last RSSI                                                               |              -              |                     -                     |
 
 Once a command is completed, ESPA acknowledgement can be:
 
@@ -378,7 +417,7 @@ Once a command is completed, ESPA acknowledgement can be:
 
 ### STATUS COMMAND: ESPB RESPONSE
 
-ESPB response to **STATUS** command is composed by three parts of information: ESPA state (stale), activation of the AM on the FLOAT and WiFi connection state. The WiFi connection state is detected with the sending of a test package, while the other states are kept consistent with the ones on the FLOAT by updating them after acknowledgements reception.
+ESPB response to **STATUS** command is composed by five parts of information: ESPA state (stale), activation of the AM on the FLOAT, WiFi connection state, last received battery millivolts, and last received RSSI. The WiFi connection state is detected by sending a dummy command code `0`, while the other states are kept consistent with the ones on the FLOAT by updating them after acknowledgements reception.
 
 **ESPA state:**
 
@@ -437,11 +476,18 @@ ESPB response to **STATUS** command is composed by three parts of information: E
 |      CONN_OK      | WiFi connection is ok                                        |
 |     CONN_LOST     | WiFi connection is currently down. ESPB state could be wrong |
 
-**Example of ESPB state response:** `CONNECTED_W_DATA | AUTO_MODE_NO | CONN_OK`
+**Battery and RSSI fields:**
+
+| ESPB field | State description |
+| :--------: | ------------------------------------------------------------ |
+| `BATTERY: <mV>` | Last battery voltage received from ESPA acknowledgements |
+| `RSSI: <dBm>` | Last ESP-NOW packet RSSI captured by ESPB promiscuous callback |
+
+**Example of ESPB state response:** `CONNECTED_W_DATA | AUTO_MODE_NO | CONN_OK | BATTERY: 12450 | RSSI: -63`
 
 --------------------------------------------------------------------------
 
-## 💡 LED STATUS INDICATORS
+## LED STATUS INDICATORS
 
 The FLOAT is equipped with RGB LEDs on both ESP32 boards that provide visual feedback about the system status:
 
@@ -449,16 +495,17 @@ The FLOAT is equipped with RGB LEDs on both ESP32 boards that provide visual fee
 
 | LED Color/Pattern | State | Description |
 |:----------------:|:-----:|:------------|
-| **Green 2 Blink** | `LED_INIT` | System initializing |
+| **Green Solid / Boot Blinks** | `LED_INIT` | System initializing |
 | **Green Solid** | `LED_IDLE` | Ready and idle, waiting for commands |
-| **Green Fast Blink** | `LED_IDLE_DATA` | Idle with data ready to send |
-| **Red Solid** | `LED_LOW_BATTERY` | Battery voltage below threshold (11.5V) |
-| **Red Fast Blink** | `LED_ERROR` | Error state or endstop hit |
-| **Blue Solid** | `LED_PROFILE` | Running depth profile |
+| **Green Blink** | `LED_IDLE_WITH_DATA` | Idle with data ready to send |
+| **Red Solid** | `LED_LOW_BATTERY` | Battery voltage below threshold (12.0V) |
+| **Red Blink** | `LED_ERROR` | Error state or motor emergency stop |
+| **Blue Solid** | `LED_PROFILE` | Running non-PID profile phase |
 | **Yellow Blink** | `LED_AUTO_MODE` | Auto mode active |
 | **Purple Blink** | `LED_HOMING` | Motor homing in progress |
+| **Purple Solid** | `LED_MOTOR_MOVING` | Motor moving |
 | **Cyan Blink** | `LED_PID_CONTROL` | PID depth control active |
-| **White Blink** | `LED_COMMUNICATION` | Communicating with ESPB |
+| **White Solid** | `LED_COMMUNICATION` | Command received / communicating with ESPB |
 | **Orange Blink** | `LED_OTA_MODE` | OTA update mode active |
 | **Off** | `LED_OFF` | System off or disabled |
 
@@ -474,156 +521,146 @@ The FLOAT is equipped with RGB LEDs on both ESP32 boards that provide visual fee
 
 --------------------------------------------------------------------------
 
-## 📝 PROJECT UPDATES
+## DEVELOPMENT AND TESTING
 
-### Version 11.0.0 - TOF Integration & Hardware Reconfiguration
+### PlatformIO Environments
 
-#### Hardware Changes:
-- **TOF Sensor Integration**: Replaced mechanical endstops with VL53L7CX Time-of-Flight sensor for non-contact homing
-- **Pin Reconfiguration**: Updated DRV8825 driver pin assignments for new PCB layout:
-  - PIN_DIR: GPIO32 (was GPIO25)
-  - PIN_STEP: GPIO33 (was GPIO26)
-  - PIN_SLEEP: GPIO25 (was GPIO32)
-  - PIN_RST: GPIO26 (was GPIO35) - Now properly initialized
-- **TOF Sensor Pins**: 
-  - LPN Pin: GPIO16 (Low Power Enable)
-  - I2C_RST Pin: GPIO15 (Hardware Reset)
+| Environment | Purpose | Main Source |
+|:------------|:--------|:------------|
+| `espA` | Float controller firmware with sensors, TOF homing, motion control, PID, ESP-NOW, and OTA | `src/espA/main.cpp` |
+| `espB` | USB-to-ESP-NOW bridge for the Control Station | `src/espB/main.cpp` |
+| `espA_manual_keyboard` | Bench firmware for serial keyboard continuous motor movement without homing | `src/espA_manual_keyboard/main.cpp` |
 
-#### TOF Homing System:
-- **VL53L7CX Configuration**: 4x4 resolution with 30 Hz ranging frequency for rapid detection
-- **Non-Contact Detection**: Detects piston proximity via distance measurement (threshold: 10mm)
-- **Improved Reliability**: No mechanical wear, consistent detection regardless of mounting tolerances
-- **Factory Reset Sequence**: Proper sensor initialization with hardware reset on startup
+Common commands:
 
-**Design Rationale:**
-
-The transition from mechanical endstops to Time-of-Flight sensing addresses several reliability concerns:
-
-**Mechanical Endstops (Previous Design):**
-- ❌ Subject to mechanical wear and contact bounce
-- ❌ Require precise mounting and alignment
-- ❌ Can fail due to water ingress or corrosion
-- ❌ Introduce mechanical stress on moving parts
-- ❌ Limited to binary (contact/no-contact) detection
-
-**TOF Sensor (Current Design):**
-- ✅ Non-contact, no mechanical wear
-- ✅ Provides continuous distance measurement
-- ✅ Immune to alignment tolerances
-- ✅ No electrical noise from contact bounce
-- ✅ Potential for position feedback during operation
-- ✅ Waterproof optical measurement
-
-The VL53L7CX was selected for its:
-- Multi-zone ranging capability (4x4 array)
-- Fast ranging frequency (up to 60 Hz)
-- High accuracy (±3mm) at short distances
-- I2C interface compatible with existing sensor bus
-- Low power consumption options
-
-```mermaid
-sequenceDiagram
-    participant Main as Main Loop
-    participant Motor as Motor Controller
-    participant TOF as VL53L7CX Sensor
-    participant Driver as DRV8825
-    participant LED as LED Controller
-    
-    Note over Main,LED: Motor Homing Sequence
-    
-    Main->>Motor: home()
-    Motor->>LED: setState(HOMING)
-    Motor->>Driver: Enable Outputs
-    Motor->>Driver: Set Homing Speed
-    Motor->>Driver: Move Down (negative steps)
-    
-    loop Until Threshold or Timeout
-        Motor->>TOF: Check Data Ready
-        alt Data Available
-            TOF->>Motor: Distance Reading
-            Motor->>Motor: Check Distance < 10mm
-            alt Below Threshold
-                Note over Motor: TOF Detection Confirmed
-                Motor->>Driver: Stop Motion
-            else Above Threshold
-                Motor->>Driver: Continue Motion
-            end
-        end
-        Driver->>Driver: Execute Step
-    end
-    
-    Motor->>Driver: Back Off Margin Steps
-    Motor->>Motor: Set Position = 0
-    Motor->>Driver: Disable Outputs
-    Motor->>LED: setState(IDLE)
-    Motor->>Main: Return Success
+```bash
+pio run -e espA
+pio run -e espB
+pio run -e espA_manual_keyboard
+pio test -e espA
 ```
 
-#### Major Improvements:
-- **Migration to PlatformIO**: Project restructured for modern development with dual environment support
-- **Modular Architecture**: Split monolithic main.cpp into separate .h/.cpp modules:
-  - Motor Control (motor.cpp/h)
-  - Communication (comms.cpp/h)
-  - Sensors (sensors.cpp/h)
-  - PID Controller (pid.cpp/h)
-  - Profile Manager (profile.cpp/h)
-  - LED Controller (led.cpp/h)
-- **AccelStepper Integration**: Enhanced motor control with acceleration, precise positioning, and non-blocking operation
-- **TOF-Based Homing**: Replaced mechanical endstops with optical distance sensing
-- **Motor Homing**: Comprehensive homing sequence with timeout protection and safety margins
-- **Enhanced PID Control**: Tuned parameters for underwater operation with anti-windup protection
-- **RGB LED Status**: Comprehensive visual feedback system with 13 different states
-- **ElegantOTA Migration**: Updated from deprecated AsyncElegantOTA to modern ElegantOTA
-- **Improved Safety**: Multiple safety layers including TOF-based protection and motor limits
+### Avvio da CLI
 
-#### Technical Details:
+Tutti i comandi vanno eseguiti dalla root del progetto:
 
-**DRV8825 Initialization Sequence:**
-```cpp
-// Critical initialization order for reliable operation:
-1. Configure GPIO pins (DIR, STEP, EN, SLEEP, RST)
-2. Set SLEEP = HIGH (driver awake)
-3. Set RST = HIGH (reset not asserted, active-low)
-4. Configure AccelStepper with setPinsInverted() first
-5. Then call setEnablePin() to avoid glitches
+```bash
+cd /Users/filippo/Documents/politocean/Float_2025
 ```
 
-**TOF Sensor Configuration:**
-- **Resolution**: 4x4 pixel array (16 zones)
-- **Ranging Frequency**: 30 Hz for responsive homing
-- **Detection Pixel**: Center pixel (index 5) used for homing
-- **I2C Speed**: 1 MHz (Fast Mode Plus)
-- **Firmware Load Time**: 5-10 seconds on initialization
+Per compilare e caricare i firmware principali:
 
-**Motor Configuration:**
-- **Max Speed**: 200 steps/sec (normal operation)
-- **Homing Speed**: 300 steps/sec
-- **Max Travel**: 1730 steps
-- **Safety Margin**: 10 steps from endpoints
-- **Homing Timeout**: 10 seconds
+```bash
+pio run -e espA -t upload
+pio run -e espB -t upload
+```
+
+Per aprire il monitor seriale a 115200 baud:
+
+```bash
+pio device monitor -e espA
+pio device monitor -e espB
+```
+
+### Test da CLI
+
+Per lanciare tutti i test disponibili sull'ambiente `espA`:
+
+```bash
+pio test -e espA
+```
+
+Per lanciare un singolo test:
+
+```bash
+pio test -e espA -f unit/motor/test_max_steps
+pio test -e espA -f unit/motor/test_speed
+pio test -e espA -f integration/test_screw_lead_20mm
+pio test -e espA -f integration/test_homing_only
+pio test -e espA -f integration/test_tof_reading
+pio test -e espA -f integration/test_homing_move_to_max
+pio test -e espA -f integration/test_motor_direction
+pio test -e espA -f integration/test_tof_motor_accuracy
+```
+
+Test disponibili:
+
+| Test | Comando | Cosa verifica |
+|:-----|:--------|:--------------|
+| `test_max_steps` | `pio test -e espA -f unit/motor/test_max_steps` | Muove solo il motore fino alla massima estensione sicura partendo da posizione logica 0 |
+| `test_speed` | `pio test -e espA -f unit/motor/test_speed` | Muove solo il motore in 6 movimenti alternati da 40 mm, aumentando velocita e accelerazione fino a 2300 |
+| `test_screw_lead_20mm` | `pio test -e espA -f integration/test_screw_lead_20mm` | Esegue homing TOF, muove il motore di 20 mm e confronta il delta TOF interno |
+| `test_motor_direction` | `pio test -e espA -f integration/test_motor_direction` | Muove solo il motore avanti/indietro e verifica la direzione logica; di default non usa il TOF |
+| `test_tof_reading` | `pio test -e espA -f integration/test_tof_reading` | Inizializza solo il TOF e verifica letture valide per circa 30 s |
+| `test_homing_only` | `pio test -e espA -f integration/test_homing_only` | Esegue solo l'homing con TOF |
+| `test_homing_move_to_max` | `pio test -e espA -f integration/test_homing_move_to_max` | Esegue homing TOF e poi va alla massima estensione sicura |
+| `test_tof_motor_accuracy` | `pio test -e espA -f integration/test_tof_motor_accuracy` | Confronta distanza TOF e posizione motore dopo l'homing |
+
+I test `test_max_steps`, `test_speed` e `test_motor_direction` sono quelli utili per muovere solo il motore senza fare homing TOF. Prima di lanciarli, assicurarsi che il pistone sia lontano dai fine corsa meccanici e che possa muoversi in entrambe le direzioni.
+
+### Controllo manuale del solo motore
+
+Per caricare il firmware da banco che permette di muovere il motore dalla tastiera seriale:
+
+```bash
+pio run -e espA_manual_keyboard -t upload
+pio device monitor -e espA_manual_keyboard
+```
+
+Comandi nel monitor seriale:
+
+| Tasto | Azione |
+|:------|:-------|
+| Freccia su oppure `w` | Tieni premuto per muovere verso home/up |
+| Freccia giu oppure `s` | Tieni premuto per muovere verso extension/down |
+| Spazio oppure `x` | Stop immediato e disabilita uscite motore |
+| `p` | Stampa posizione corrente |
+| `t` | Stampa una lettura TOF |
+| `h` oppure `?` | Stampa help |
+
+Questo firmware non esegue homing: all'avvio assegna una posizione logica centrale e muove mentre riceve ripetizioni del tasto premuto; quando rilasci il tasto si ferma automaticamente dopo un breve timeout. Durante il movimento stampa periodicamente posizione motore e distanza TOF. Usarlo solo con il meccanismo in una posizione fisicamente sicura.
+
+### Test Layout
+
+Hardware-oriented tests are stored under `test/`:
+- `test/unit/motor/test_max_steps` checks safe maximum extension from a known zero
+- `test/unit/motor/test_speed` checks alternating 40 mm moves while speed and acceleration increase up to 2300
+- `test/integration/test_screw_lead_20mm` checks the configured screw pitch, starts, and lead with one 20 mm move measured internally by TOF
+- `test/integration/test_tof_reading` checks that the TOF sensor initializes and returns valid distance samples for about 30 seconds
+- `test/integration/test_homing_only` checks TOF-based homing
+- `test/integration/test_homing_move_to_max` checks homing followed by safe full extension
+- `test/integration/test_motor_direction` checks logical/physical motion direction, optionally using TOF
+- `test/integration/test_tof_motor_accuracy` checks TOF and motor movement consistency
 
 --------------------------------------------------------------------------
 
-## 📚 UTILITIES AND RESOURCES
+## UTILITIES AND RESOURCES
 
 **Arduino Library Repositories:**
-- ESPAsyncWebServer: https://github.com/dvarrel/ESPAsyncWebSrv 
-- AsyncElegantOTA: https://github.com/ayushsharma82/AsyncElegantOTA
+- BlueRobotics MS5837: https://github.com/bluerobotics/BlueRobotics_MS5837_Library
+- FastAccelStepper: https://github.com/gin66/FastAccelStepper
+- INA: https://github.com/Zanduino/INA
+- VL53L4CD: https://github.com/stm32duino/VL53L4CD
+- ESPAsyncWebServer: https://github.com/dvarrel/ESPAsyncWebSrv
+- ElegantOTA: https://github.com/ayushsharma82/ElegantOTA
 
 **Development Tools:**
 - PlatformIO IDE: Modern embedded development platform
 - ESP32 Arduino Core: Framework for ESP32 development
-- AccelStepper Library: Non-blocking stepper motor control
-- VL53L7CX Library: Time-of-Flight sensor driver
+- FastAccelStepper Library: Timer/task-driven stepper motor control
+- VL53L4CD Library: Time-of-Flight sensor driver
 
 --------------------------------------------------------------------------
 
-## 📖 GLOSSARY
+## GLOSSARY
 
 - **AM (Auto Mode)**: Autonomous operation mode that triggers profiles on connection loss
 - **CS (Control Station)**: Ground-based computer running the GUI application
 - **ESPA**: ESP32 mounted on the Float board (primary controller)
 - **ESPB**: ESP32 communication bridge between Float and CS
+- **EEPROM Profile Buffer**: Current onboard storage used for compact profile records before JSON transmission
+- **FastAccelStepper**: Timer/task-driven stepper library used by `MotorController`
+- **MotionController**: Firmware layer that combines motor, TOF, LEDs, debug, timeouts, and emergency stops for safe movement routines
 - **Commit a command**: To accept a sent command. After commit, command execution and success is ideally granted
 - **Complete a command**: To execute all the requirements requested by a command
 - **Profile**: A complete mission cycle (descent → depth control → ascent → data transmission)
@@ -634,7 +671,6 @@ sequenceDiagram
 
 --------------------------------------------------------------------------
 
-**Documentation Version:** 11.0.0  
-**Last Updated:** March 2026  
+**Documentation Version:** 11.1.0
+**Last Updated:** May 2026
 **Team Contact:** PoliTOcean @ Politecnico di Torino
-

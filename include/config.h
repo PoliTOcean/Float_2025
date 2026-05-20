@@ -27,18 +27,35 @@ constexpr uint8_t PIN_LED_B         = 5;    // Blue LED channel
 // ---------------------------------------------------------------------------
 // MOTOR CONSTANTS
 // ---------------------------------------------------------------------------
-constexpr uint16_t MOTOR_MAX_STEPS       = 1730;  // Full travel range (steps)
-constexpr uint32_t MOTOR_MAX_SPEED       = 200;   // Normal operating speed (steps/s)
-constexpr uint32_t MOTOR_HOMING_SPEED    = 300;   // Homing speed (steps/s)
-constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
-constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 10000;  // Homing timeout (ms)
-// Endstop proximity window: only check endstop when within this many steps of it
-constexpr uint16_t MOTOR_ENDSTOP_WINDOW  = 20;
+constexpr uint16_t MOTOR_STEPS_PER_REV   = 200;   // Motor steps per revolution (motor specific 360/1.8)
+constexpr uint8_t  MOTOR_MICROSTEP       = 1;     // Microstepping (4 = quarter step)
+constexpr float    MOTOR_GEAR_RATIO      = 26.85124f; // Gearbox ratio (26 + 103/121)
+constexpr float    MOTOR_SCREW_PITCH_MM  = 2.0f;  // Distance between adjacent thread crests (mm)
+constexpr uint8_t  MOTOR_SCREW_STARTS    = 4;     // Number of thread starts/principles
 
-// TOF (Time-of-Flight) sensor — VL53L7CX
-constexpr uint8_t  TOF_LPN_PIN           = 16;    // Low Power eNable pin
-constexpr uint8_t  TOF_I2C_RST_PIN       = 15;    // I2C reset pin
-constexpr float    TOF_HOMING_THRESHOLD  = 10.0f; // Distance threshold for homing (mm)
+constexpr float MOTOR_SCREW_LEAD_MM =
+    MOTOR_SCREW_PITCH_MM * MOTOR_SCREW_STARTS;
+constexpr float MOTOR_REVS_PER_MM =
+    MOTOR_GEAR_RATIO / MOTOR_SCREW_LEAD_MM;
+constexpr float MOTOR_STEPS_PER_MM =
+    MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP * MOTOR_REVS_PER_MM;
+
+constexpr float    MOTOR_TRAVEL_MM       = 45.0f; // Total syringe travel (mm)
+constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
+																 MOTOR_STEPS_PER_MM + 0.5f);
+constexpr uint32_t MOTOR_MAX_SPEED       = 1500;  // Normal operating speed (steps/s); tested stable up to 2140 steps/s
+constexpr uint32_t MOTOR_MAX_ACCELERATION = 1500;   // Normal acceleration/deceleration (steps/s^2); tested stable up to 2140 steps/s^2
+constexpr uint32_t MOTOR_HOMING_SPEED    = 1500;   // Homing speed (steps/s)
+constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
+constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
+constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during homing (ms)
+
+// TOF (Time-of-Flight) sensor - VL53L4CD
+constexpr uint8_t  TOF_XSHUT_PIN         = 16;    // Sensor shutdown pin
+constexpr uint8_t  TOF_GPIO1_PIN         = 15;    // Optional interrupt pin, unused in polling mode
+constexpr float    TOF_DISTANCE_OFFSET_MM = 24.0f; // Measured raw offset: raw distance - real distance
+constexpr float    TOF_HOMING_THRESHOLD  = 40.0f; // Distance threshold for homing (mm)
+constexpr float    TOF_MAX_STOP_DISTANCE_CM = 0.0f; // Max-extension TOF stop distance (cm, <=0 disabled until calibrated)
 
 // ---------------------------------------------------------------------------
 // TIMING CONSTANTS  (ms unless noted)
@@ -78,7 +95,6 @@ constexpr int8_t   TARGET_BOTTOM       = -1;           // Descend to pool floor
 // SENSOR CONSTANTS
 // ---------------------------------------------------------------------------
 constexpr float    WATER_DENSITY_FRESH = 997.0f;   // kg/m³
-constexpr float    WATER_DENSITY_SALT  = 1029.0f;  // kg/m³  (not currently used)
 constexpr float    GRAVITY             = 9.80665f;
 
 // ---------------------------------------------------------------------------
@@ -87,8 +103,6 @@ constexpr float    GRAVITY             = 9.80665f;
 constexpr char     WIFI_SSID[]         = "PIPO";
 constexpr char     WIFI_PASSWORD[]     = "politocean";
 
-// MAC addresses
-constexpr uint8_t  MAC_ESPA[6]        = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68};
 constexpr uint8_t  MAC_ESPB[6]        = {0xEC, 0xE3, 0x34, 0xCE, 0x59, 0x1C};
 
 // ---------------------------------------------------------------------------
