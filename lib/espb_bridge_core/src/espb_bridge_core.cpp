@@ -1,0 +1,231 @@
+#include "espb_bridge_core.h"
+
+#include <ctype.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+
+namespace {
+constexpr size_t COMMAND_BUFFER_SIZE = 96;
+
+constexpr EspbProtocolCommand PROTOCOL_COMMANDS[] = {
+    {"GO", 1, CMD1_ACK},
+    {"LISTENING", 2, "DATA_OR_STOP_DATA"},
+    {"BALANCE", 3, CMD3_ACK},
+    {"CLEAR_SD", 4, CMD4_ACK},
+    {"SWITCH_AUTO_MODE", 5, CMD5_ACK},
+    {"SEND_PACKAGE", 6, "JSON_LIVE_PACKET"},
+    {"TRY_UPLOAD", 7, CMD7_ACK},
+    {"PARAMS", 8, CMD8_ACK},
+    {"TEST_FREQ", 9, CMD9_ACK},
+    {"TEST_STEPS", 10, CMD10_ACK},
+    {"DEBUG", 11, CMD11_ACK},
+    {"HOME_MOTOR", 12, CMD12_ACK},
+};
+
+void zeroMessage(output_message& message) {
+    memset(&message, 0, sizeof(message));
+}
+
+void copyTrimmedCommand(const char* input, char* output, size_t outputSize) {
+    if (outputSize == 0) {
+        return;
+    }
+
+    size_t start = 0;
+    while (input[start] != '\0' && isspace(static_cast<unsigned char>(input[start]))) {
+        start++;
+    }
+
+    size_t end = strlen(input + start);
+    while (end > 0 && isspace(static_cast<unsigned char>(input[start + end - 1]))) {
+        end--;
+    }
+
+    if (end >= outputSize) {
+        end = outputSize - 1;
+    }
+
+    memcpy(output, input + start, end);
+    output[end] = '\0';
+}
+
+bool parseFloatToken(const char* token, float& value) {
+    if (token == nullptr || *token == '\0') {
+        return false;
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    value = strtof(token, &end);
+    return errno == 0 && end != token && *end == '\0';
+}
+
+bool parseLongToken(const char* token, long& value) {
+    if (token == nullptr || *token == '\0') {
+        return false;
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    value = strtol(token, &end, 10);
+    return errno == 0 && end != token && *end == '\0';
+}
+
+bool hasNoExtraToken() {
+    return strtok(nullptr, " ") == nullptr;
+}
+
+EspbParsedCommand makeForwardCommand(uint8_t commandCode) {
+    EspbParsedCommand parsed;
+    parsed.type = EspbParsedCommandType::ForwardToEspA;
+    zeroMessage(parsed.message);
+    parsed.message.command = commandCode;
+    return parsed;
+}
+}
+
+EspbParsedCommand espbParseSerialCommand(const char* line) {
+    EspbParsedCommand parsed;
+    zeroMessage(parsed.message);
+
+    if (line == nullptr) {
+        return parsed;
+    }
+
+    char commandLine[COMMAND_BUFFER_SIZE];
+    copyTrimmedCommand(line, commandLine, sizeof(commandLine));
+    if (commandLine[0] == '\0') {
+        return parsed;
+    }
+
+    char* token = strtok(commandLine, " ");
+    if (token == nullptr) {
+        return parsed;
+    }
+
+    if (strcmp(token, "STATUS") == 0) {
+        if (!hasNoExtraToken()) {
+            return parsed;
+        }
+        parsed.type = EspbParsedCommandType::Status;
+        return parsed;
+    }
+
+    if (strcmp(token, "PARAMS") == 0) {
+        float kp = 0.0f;
+        float ki = 0.0f;
+        float kd = 0.0f;
+        if (!parseFloatToken(strtok(nullptr, " "), kp) ||
+            !parseFloatToken(strtok(nullptr, " "), ki) ||
+            !parseFloatToken(strtok(nullptr, " "), kd) ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+
+        parsed = makeForwardCommand(8);
+        parsed.message.params[0] = kp;
+        parsed.message.params[1] = ki;
+        parsed.message.params[2] = kd;
+        return parsed;
+    }
+
+    if (strcmp(token, "TEST_FREQ") == 0) {
+        long freq = 0;
+        if (!parseLongToken(strtok(nullptr, " "), freq) ||
+            freq < 0 || freq > UINT16_MAX ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+
+        parsed = makeForwardCommand(9);
+        parsed.message.freq = static_cast<uint16_t>(freq);
+        return parsed;
+    }
+
+    if (strcmp(token, "TEST_STEPS") == 0) {
+        long steps = 0;
+        if (!parseLongToken(strtok(nullptr, " "), steps) ||
+            steps < INT32_MIN || steps > INT32_MAX ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+
+        parsed = makeForwardCommand(10);
+        parsed.message.steps = static_cast<int32_t>(steps);
+        return parsed;
+    }
+
+    for (const EspbProtocolCommand& command : PROTOCOL_COMMANDS) {
+        if (strcmp(token, command.commandText) == 0) {
+            if (command.commandCode == 8 ||
+                command.commandCode == 9 ||
+                command.commandCode == 10 ||
+                !hasNoExtraToken()) {
+                return parsed;
+            }
+            return makeForwardCommand(command.commandCode);
+        }
+    }
+
+    return parsed;
+}
+
+bool espbApplyIncomingMessage(EspbBridgeState& state, const input_message& message) {
+    state.batteryCharge = message.charge;
+
+    if (strcmp(message.message, IDLE_ACK) == 0) {
+        state.status = ESPB_STATUS_CONNECTED;
+        return false;
+    }
+
+    if (strcmp(message.message, IDLE_W_DATA_ACK) == 0) {
+        state.status = ESPB_STATUS_CONNECTED_W_DATA;
+        return false;
+    }
+
+    state.status = ESPB_STATUS_EXECUTING_CMD;
+    if (strcmp(message.message, CMD5_ACK) == 0) {
+        state.autoModeActive = !state.autoModeActive;
+    }
+
+    return true;
+}
+
+const char* espbStatusString(int8_t status) {
+    switch (status) {
+        case ESPB_STATUS_UNKNOWN:
+            return "UNKNOWN";
+        case ESPB_STATUS_CONNECTED:
+            return "CONNECTED";
+        case ESPB_STATUS_CONNECTED_W_DATA:
+            return "CONNECTED_W_DATA";
+        case ESPB_STATUS_EXECUTING_CMD:
+            return "EXECUTING_CMD";
+        default:
+            return "STATUS_ERROR";
+    }
+}
+
+const EspbProtocolCommand* espbProtocolCommands(size_t& count) {
+    count = sizeof(PROTOCOL_COMMANDS) / sizeof(PROTOCOL_COMMANDS[0]);
+    return PROTOCOL_COMMANDS;
+}
+
+void espbFormatStatus(char* buffer,
+                      size_t bufferSize,
+                      const EspbBridgeState& state,
+                      bool connectionOk) {
+    if (buffer == nullptr || bufferSize == 0) {
+        return;
+    }
+
+    snprintf(buffer,
+             bufferSize,
+             "%s | %s | %s | BATTERY: %u | RSSI: %d",
+             espbStatusString(state.status),
+             state.autoModeActive ? "AUTO_MODE_YES" : "AUTO_MODE_NO",
+             connectionOk ? "CONN_OK" : "CONN_LOST",
+             state.batteryCharge,
+             state.lastRssi);
+}

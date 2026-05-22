@@ -25,34 +25,28 @@
 /** INCLUDES **/
 #include <Arduino.h>
 #include <float_common.h>  // Shared definitions with espA
+#include <config.h>
+#include <espb_bridge_core.h>
 #include <esp_now.h>       // ESP-NOW library for WiFi communication
 #include <esp_wifi.h>
 #include <WiFi.h>          // Layer for proper initialization and setting of ESP32 WiFi module
-#include <Wire.h>          // Library for I2C connection protocol interface
 
 /** HARDWARE PIN DEFINITIONS **/
 const uint8_t BUILTIN_LED_PIN = 2;  // Built-in LED pin on ESP32
 
 /** PROGRAM GLOBAL CONSTANTS **/
-#define BUFFER_SIZE 20      // Chosen size in bytes of the Serial software buffer
+#define BUFFER_SIZE 64      // Serial command buffer size
 const uint16_t MAX_CONN_TIME = 100; // Time in ms that has to elapse before send_message function stops to try a sending
 
 /** GLOBAL OBJECTS **/
 esp_now_peer_info_t peerInfo; // Object containing info about the MAC peer we want to connect with
 
-/** MAC ADDRESSES **/
-// ESP-NOW constant for peer MAC address value. Replace with the MAC address of your receiver (ESPA) 
-uint8_t broadcastAddress[] = {0x5C, 0x01, 0x3B, 0x2C, 0xE0, 0x68};
-
 /** PROGRAM GLOBAL VARIABLES **/
-uint8_t auto_mode_active = 0;     // 1 if AM is active, 0 otherwise
 uint8_t serial_rdy       = 0;     // Flag for signaling that the Serial software buffer serialInput is full and ready to be consumed
 uint8_t message_rdy      = 0;     // Flag for signaling that a new message arrived on the MAC layer and is ready to be read 
 int8_t  send_result      = -1;    // Flag for sending-over-MAC logic, needed to handle sending failure
-int8_t  status           = 0;     // State variable that is updated according to arriving messages and is used to feedback the CS when requested
 char    serialInput[BUFFER_SIZE]; // Serial software buffer used to empty the hardware one as soon as a new command arrives
-uint16_t battery_charge  = 0;     // FLOAT battery charge, updated at last acknowledgement
-int last_rssi = 0;             // Last message RSSI in dBm
+EspbBridgeState bridgeState;      // Cached FLOAT status exposed to the GUI
 
 /** LED STATE MANAGEMENT **/
 FloatLEDState current_led_state = LED_INIT;
@@ -84,8 +78,9 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len);
 void setLEDState(FloatLEDState state);
 void updateLED();
-uint8_t send_command(uint8_t cmd_code, uint16_t max_conn_time);
+uint8_t send_command(const output_message& message, uint16_t max_conn_time);
 void serial_handler();
+void setEspNowChannel();
 
 /** LED CONTROL FUNCTIONS **/
 void setLEDState(FloatLEDState state) {
@@ -129,11 +124,13 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     return;
 
   const wifi_promiscuous_pkt_t *ppkt = (wifi_promiscuous_pkt_t *)buf;
-  const wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t *)ppkt->payload;
-  const wifi_ieee80211_mac_hdr_t *hdr = &ipkt->hdr;
+  bridgeState.lastRssi = ppkt->rx_ctrl.rssi;
+}
 
-  int rssi = ppkt->rx_ctrl.rssi;
-  last_rssi = rssi;
+void setEspNowChannel() {
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
 }
 
 /*
@@ -153,7 +150,7 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 *********************************************************************************************************
 */
 void OnDataRecv(const uint8_t * mac, const uint8_t * incomingData, int len) {
-  if (!message_rdy) {
+  if (!message_rdy && len == sizeof(input_message)) {
     message_rdy = 1;
     memcpy(&input.charge, incomingData, sizeof(input.charge));
     memcpy(&input.message, incomingData + sizeof(input.charge), sizeof(input.message));
@@ -199,13 +196,16 @@ void OnDataSent(const uint8_t * mac, esp_now_send_status_t status) {
 * Return(s)   : 1 if sending succeeded, 0 if given time elapsed.
 *********************************************************************************************************
 */
-uint8_t send_command(uint8_t cmd_code, uint16_t max_conn_time) {
-  output.command = cmd_code;                                             // Command code is copied in the output data struct
+uint8_t send_command(const output_message& message, uint16_t max_conn_time) {
+  output = message;
   uint64_t prec_time = millis();                                         // A time reference (ms elapsed from startup) is stored in prec_time
   
   while (true) {                                                         // [* sending sequence start]
     send_result = -1;                                                    // send_result flag is cleared
-    esp_now_send(broadcastAddress, (uint8_t *) &output, sizeof(output)); // Tries to send the code over MAC layer
+    esp_err_t err = esp_now_send(MAC_ESPA, (uint8_t *) &output, sizeof(output)); // Tries to send the code over MAC layer
+    if (err != ESP_OK) {
+      send_result = 0;
+    }
     
     while(send_result == -1) {                                           // Waits for OnDataSent callback to set send_result flag
       delay(1); // Small delay to prevent watchdog issues
@@ -227,7 +227,7 @@ uint8_t send_command(uint8_t cmd_code, uint16_t max_conn_time) {
 *
 * Description : Callback function for Serial buffer management. If serialInput has already 
 *               been consumed, when new data arrives on the Serial channel, the function
-*               takes up to 20 bytes from the hardware buffer, stopping at the new line
+*               takes bytes from the hardware buffer, stopping at a line ending
 *               character, copies them into the serialInput char array and fills the rest with 
 *               string terminators. It also signals that the serialInput buffer is now ready to be 
 *               read by setting the serial_rdy flag, that will be cleared only after serialInput
@@ -244,8 +244,11 @@ void serial_handler() {
     uint8_t buffer_index = 0;                                          
     char c = Serial.read();
 
-    while (c != '\n' && Serial.available()) {                          // While bytes are available on the channel and its not a new line
+    while (c != '\n' && c != '\r' && buffer_index < BUFFER_SIZE - 1) {
       serialInput[buffer_index++] = c;                                 // Empties the hardware buffer into the serialInput buffer
+      if (!Serial.available()) {
+        break;
+      }
       c = Serial.read();
     }
     for(int i = buffer_index; i < BUFFER_SIZE; i++) {
@@ -263,6 +266,7 @@ void setup() {
   pinMode(BUILTIN_LED_PIN, OUTPUT);
   
   WiFi.mode(WIFI_STA);                                                 // Sets device as a Wi-Fi Station
+  setEspNowChannel();
 
   if (esp_now_init() != ESP_OK) {                                      // Inits esp_now
     Serial.println("Error initializing ESP-NOW");
@@ -270,6 +274,7 @@ void setup() {
   }
 
   Serial.printf("ESPB MAC Address: %s\n", WiFi.macAddress().c_str());
+  Serial.printf("ESPB ESP-NOW channel: %u\n", ESPNOW_CHANNEL);
   
   esp_now_register_recv_cb(OnDataRecv);                                // Registers esp_now arrival callback
   esp_now_register_send_cb(OnDataSent);                                // Registers esp_now sending callback
@@ -277,8 +282,8 @@ void setup() {
   esp_wifi_set_promiscuous(true);                                      // Enables reading RSSI values from incoming packets
   esp_wifi_set_promiscuous_rx_cb(&promiscuous_rx_cb);
   
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);                     // Registers peer by passing peer object pointer
-  peerInfo.channel = 0;                                                // Channel selection
+  memcpy(peerInfo.peer_addr, MAC_ESPA, 6);                             // Registers peer by passing peer object pointer
+  peerInfo.channel = ESPNOW_CHANNEL;                                   // Channel selection
   peerInfo.encrypt = false;
   
   if (esp_now_add_peer(&peerInfo) != ESP_OK){                          // Adds peer
@@ -297,18 +302,8 @@ void loop() {
   updateLED();
   
   if (message_rdy) {                                                                         // Checks if there's any message ready to be read
-    // Updates the status with respect to the relative ack
-         if (strcmp(input.message, IDLE_ACK)        == 0) status = 0;                      // The FLOAT is in idle with no data to send
-    else if (strcmp(input.message, IDLE_W_DATA_ACK) == 0) status = 1;                      // The FLOAT is in idle and has some data to send
-    else {
-      status = 2;                                                                           // If it's not in idle, the FLOAT is executing a command
-      Serial.println(input.message);                                                       // Sends incoming message on Serial channel 
-    }   //                                                                                     for real time feedback to the CS                                                          
-    
-    battery_charge = input.charge;                                                          // Update charge value 
-
-    if (strcmp(input.message, CMD5_ACK) == 0) {                                            // If AM toggle command succeeded,
-      auto_mode_active = !auto_mode_active;                                                // toggles flag for feedback purposes
+    if (espbApplyIncomingMessage(bridgeState, input)) {
+      Serial.println(input.message);
     }
     
     message_rdy = 0;                                                                       // Releases the lock on the message container
@@ -316,69 +311,18 @@ void loop() {
 
   if (serial_rdy) {                            // Checks if there's any command ready to be consumed 
 
-    // Broker that sends different command codes to the FLOAT according to the incoming command string:
-    // CS has to be aware of this command strings, as well as the FLOAT should be able to bind different 
-    // codes to the right command. Exception is the "STATUS" command string that expects a feedback to the
-    // CS about the status of the system 
-    char *token = strtok(serialInput, " ");
-    
-    if (strcmp(token, "PARAMS") == 0) {
-      output.params[0] = atof(strtok(NULL, " "));
-      output.params[1] = atof(strtok(NULL, " "));
-      output.params[2] = atof(strtok(NULL, " "));
-      send_command(8, MAX_CONN_TIME);
-    }
-    else if (strcmp(token, "TEST_FREQ") == 0) {
-      output.freq = atoi(strtok(NULL, " "));
-      send_command(9, MAX_CONN_TIME);
-    }
-    else if (strcmp(token, "TEST_STEPS") == 0) {
-      output.steps = atoi(strtok(NULL, " "));
-      send_command(10, MAX_CONN_TIME);
-    }
-    else if (strcmp(serialInput, "GO"               ) == 0) send_command(1, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "LISTENING"        ) == 0) send_command(2, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "BALANCE"          ) == 0) send_command(3, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "CLEAR_SD"         ) == 0) send_command(4, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "SWITCH_AUTO_MODE" ) == 0) send_command(5, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "SEND_PACKAGE"     ) == 0) send_command(6, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "TRY_UPLOAD"       ) == 0) send_command(7, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "DEBUG"            ) == 0) send_command(11, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "HOME_MOTOR"       ) == 0) send_command(12, MAX_CONN_TIME);
-    else if (strcmp(serialInput, "STATUS"           ) == 0) {
-      uint8_t result;
-      // status driven switch that sends a status string to the CS if requested
-      switch (status) { 
-        case 0:
-          Serial.print("CONNECTED");
-          break;
-        case 1:
-          Serial.print("CONNECTED_W_DATA");
-          break;
-        case 2:
-          Serial.print("EXECUTING_CMD");
-          break;
-        default: 
-          Serial.print("STATUS_ERROR");
-          break;
-      }
-      
-      // Additional info to the status string, including current AM activation state and current WiFi connection state.
-      // AM activation flag is updated together with the actual one on the FLOAT
-      Serial.print(" | ");
-      if (auto_mode_active) Serial.print("AUTO_MODE_YES"); 
-      else                  Serial.print("AUTO_MODE_NO");
+    EspbParsedCommand parsed = espbParseSerialCommand(serialInput);
+    if (parsed.type == EspbParsedCommandType::ForwardToEspA) {
+      send_command(parsed.message, MAX_CONN_TIME);
+    } else if (parsed.type == EspbParsedCommandType::Status) {
+      output_message dummy;
+      memset(&dummy, 0, sizeof(dummy));
+      dummy.command = 0;
 
-      result = send_command(0, MAX_CONN_TIME); // Sends a dummy package (command code 0) to the FLOAT to detect connection state
-      Serial.print(" | ");
-      if (result) Serial.print("CONN_OK");
-      else        Serial.print("CONN_LOST");
-      Serial.print(" | ");
-      Serial.print("BATTERY: ");
-      Serial.print(battery_charge);
-      Serial.print(" | ");
-      Serial.print("RSSI: ");
-      Serial.println(last_rssi);
+      const bool connectionOk = send_command(dummy, MAX_CONN_TIME);
+      char statusLine[128];
+      espbFormatStatus(statusLine, sizeof(statusLine), bridgeState, connectionOk);
+      Serial.println(statusLine);
     }
 
     serial_rdy = 0;                            // Releases the lock on the command container

@@ -1,0 +1,7 @@
+{
+  "name": "espb_bridge_core",
+  "version": "1.0.0",
+  "description": "Pure ESPB bridge protocol parsing and status formatting",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
