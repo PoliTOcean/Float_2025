@@ -22,12 +22,19 @@ public:
     // Read all sensor values (call before depth() / temperature())
     void read();
 
-    // Depth calculation using Stevino's principle.
-    // Returns depth of the pressure sensor + FLOAT_LENGTH offset (m).
+    // Legacy/reference depth used by the current controller: bottom of float.
     float depth();
 
-    // Overload: calculate depth from a raw pressure value (Pa)
+    // Raw pressure-sensor depth calculation using Stevino's principle.
+    float sensorDepth();
+
+    // Overload: calculate raw pressure-sensor depth from a pressure value (Pa)
     float depthFromPressure(float pressurePa) const;
+
+    // Corrected MATE judge references, based on configurable sensor offsets.
+    float bottomDepth();
+    float topDepth();
+    float referenceDepthForPhase(const char* phase);
 
     // Last raw pressure reading (Pa)
     float pressure();

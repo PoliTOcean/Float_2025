@@ -63,6 +63,8 @@ constexpr float    TOF_MAX_STOP_DISTANCE_CM = 0.0f; // Max-extension TOF stop di
 constexpr uint16_t PERIOD_MEASUREMENT   = 100;   // Between depth readings
 constexpr uint16_t PERIOD_EEPROM_WRITE  = 5000;  // Between EEPROM writes
 constexpr uint16_t PERIOD_CONN_CHECK    = 500;   // Between idle acknowledgements
+constexpr uint16_t PROFILE_LOG_PERIOD_MS = 1000; // Between flash profile writes
+constexpr uint16_t DATA_PACKET_PERIOD_MS = 5000; // Packet cadence shown to judges
 
 // ---------------------------------------------------------------------------
 // PID TUNING
@@ -80,15 +82,20 @@ constexpr float PID_INTEGRAL_LIMIT    = 5.0f;    // Anti-windup clamp
 // ---------------------------------------------------------------------------
 constexpr uint8_t  PROFILE_MAX_COUNT   = 2;      // Profiles before auto-stop
 constexpr float    FLOAT_LENGTH        = 0.51f;  // Bottom-to-sensor height (m)
-constexpr float    DEPTH_MAX_ERROR     = 0.49f;  // "At target" tolerance (m)
+constexpr float    SENSOR_TO_BOTTOM_M  = FLOAT_LENGTH; // Pressure sensor to bottom reference
+constexpr float    SENSOR_TO_TOP_M     = 0.0f;   // Pressure sensor to top reference; calibrate on hardware
+constexpr float    DEPTH_MAX_ERROR     = 0.33f;  // MATE depth tolerance (m)
 constexpr float    DEPTH_EPSILON       = 0.01f;  // "Stationary" tolerance (m)
-constexpr float    TARGET_DEPTH        = 2.50f;  // PID setpoint (m)
-constexpr float    STAT_TIME           = 45.0f;  // Hold time at target (s)
+constexpr float    TARGET_DEPTH        = 2.50f;  // Deep hold: bottom reference (m)
+constexpr float    TARGET_SHALLOW_TOP_DEPTH = 0.40f; // Shallow hold: top reference (m)
+constexpr float    TARGET_SHALLOW_BOTTOM_DEPTH =
+    TARGET_SHALLOW_TOP_DEPTH + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
+constexpr float    STAT_TIME           = 30.0f;  // MATE hold time at target (s)
 constexpr float    TIMEOUT_PID_TIME    = 180.0f; // Max PID phase time (s)
-constexpr float    TIMEOUT_ASCENT      = 50.0f;  // Max ascent time (s)
+constexpr float    TIMEOUT_ASCENT      = 120.0f; // Max ascent + shallow hold time (s)
 
 // Sentinel values passed to measure() as targetDepth
-constexpr float    TARGET_SURFACE      = FLOAT_LENGTH; // Ascend to surface
+constexpr float    TARGET_SURFACE      = FLOAT_LENGTH; // Legacy surface sentinel
 constexpr int8_t   TARGET_BOTTOM       = -1;           // Descend to pool floor
 
 // ---------------------------------------------------------------------------
@@ -103,9 +110,15 @@ constexpr float    GRAVITY             = 9.80665f;
 constexpr char     WIFI_SSID[]         = "PIPO";
 constexpr char     WIFI_PASSWORD[]     = "politocean";
 
-constexpr uint8_t  MAC_ESPB[6]        = {0xEC, 0xE3, 0x34, 0xCE, 0x59, 0x1C};
+// constexpr uint8_t  MAC_ESPB[6]        = {0xEC, 0xE3, 0x34, 0xCE, 0x59, 0x1C};
+constexpr uint8_t MAC_ESPB[6] = {0x88, 0x57, 0x21, 0x84, 0x8C, 0xE8};
+constexpr uint8_t MAC_ESPA[6] = {0x88, 0x57, 0x21, 0x84, 0x83, 0x8C};
+constexpr uint8_t ESPNOW_CHANNEL = 1;
 
 // ---------------------------------------------------------------------------
 // EEPROM / DATA
 // ---------------------------------------------------------------------------
+constexpr char     COMPANY_NUMBER[]     = "EX10";
+constexpr char     FLASH_LOG_PATH[]     = "/mission/current_profile.csv";
+
 // EEPROM_SIZE and sensor_data struct come from float_common.h

@@ -2,6 +2,7 @@
 #include "config.h"
 #include "led.h"
 #include "DebugSerial.h"
+#include <esp_wifi.h>
 
 /*
  *******************************************************************************
@@ -15,6 +16,14 @@ extern bool debug_mode_active;
 CommsManager* CommsManager::_instance = nullptr;
 CommsManager  comms;
 
+namespace {
+void setEspNowChannel() {
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous(false);
+}
+}
+
 // ---------------------------------------------------------------------------
 CommsManager::CommsManager() {
     _instance = this;
@@ -25,6 +34,7 @@ CommsManager::CommsManager() {
 // ---------------------------------------------------------------------------
 void CommsManager::begin() {
     WiFi.mode(WIFI_STA);
+    setEspNowChannel();
     Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
     _initEspNow();
 }
@@ -41,7 +51,7 @@ void CommsManager::_initEspNow() {
     esp_now_register_recv_cb(_onDataRecv);
 
     memcpy(_peerInfo.peer_addr, MAC_ESPB, 6);
-    _peerInfo.channel = 0;
+    _peerInfo.channel = ESPNOW_CHANNEL;
     _peerInfo.encrypt = false;
 
     if (esp_now_add_peer(&_peerInfo) != ESP_OK) {
@@ -64,6 +74,7 @@ void CommsManager::_deInitEspNow() {
 // ---------------------------------------------------------------------------
 void CommsManager::_reInitEspNow() {
     WiFi.mode(WIFI_STA);
+    setEspNowChannel();
     delay(100);
     if (esp_now_init() != ESP_OK) {
         Serial.println("ERROR: ESP-NOW re-init failed");

@@ -15,7 +15,7 @@
  *   pid/pid.h             — depth PID controller
  *   sensors/sensors.h     — Bar02 pressure sensor + INA219 power monitor
  *   comms/comms.h         — ESP-NOW messaging + OTA
- *   profile/profile.h     — depth profile execution + EEPROM logging
+ *   profile/profile.h     — depth profile execution + flash CSV logging
  *
  * Maintainers: Colabella Davide
  * Past contributors: Fachechi Gino Marco, Gullotta Salvatore
@@ -38,6 +38,7 @@
 #include "sensors.h"
 #include "comms.h"
 #include "profile.h"
+#include "flash_storage.h"
 
 // ---------------------------------------------------------------------------
 // State machine status codes
@@ -109,6 +110,17 @@ void setup() {
                     return comms.sendMessage(msg, timeout) ? 1 : 0;
                 });
     Debug.println("DebugSerial ready");
+
+    // --- Internal flash mission log ---
+    if (flashStorage.begin()) {
+        if (!flashStorage.clearLog()) {
+            Debug.println("WARNING: flash log reset failed");
+        } else {
+            Debug.println("Flash log ready");
+        }
+    } else {
+        Debug.println("WARNING: flash log unavailable; stored data disabled");
+    }
 
     // --- Sensors (Bar02 + INA219) ---
     // Both _initPressureSensor() and _initPowerMonitor() will block and
@@ -217,20 +229,29 @@ void loop() {
         bool ack = g_autoCommitted ? true : comms.sendMessage(CMD1_ACK, 1000);
 
         if (ack && motionController.motionAllowed()) {
-            Debug.println("Profile: starting");
+            Debug.println("MATE mission: starting vertical profiles");
             profileManager.resetEEPROM();
+            if (g_profileCount == 0) {
+                profileManager.logDeploymentPacket();
+            }
 
-            Debug.println("Phase 1: PID descent to target depth");
-            profileManager.measure(TARGET_DEPTH, STAT_TIME, TIMEOUT_PID_TIME);
+            while (g_profileCount < PROFILE_MAX_COUNT && motionController.motionAllowed()) {
+                profileManager.beginProfile(g_profileCount + 1);
+                Debug.printf("Profile %d: PID descent to 2.5 m bottom reference\n",
+                             g_profileCount + 1);
+                profileManager.measure(TARGET_DEPTH, STAT_TIME, TIMEOUT_PID_TIME);
 
-            delay(500);
+                delay(500);
 
-            Debug.println("Phase 2: Ascent to surface");
-            profileManager.measure(TARGET_SURFACE, 3.0f, TIMEOUT_ASCENT);
+                Debug.printf("Profile %d: PID ascent to 40 cm top reference\n",
+                             g_profileCount + 1);
+                profileManager.measure(TARGET_SHALLOW_BOTTOM_DEPTH, STAT_TIME, TIMEOUT_ASCENT);
 
-            motor.disableOutputs();
-            g_profileCount++;
-            Debug.printf("Profile %d complete\n", g_profileCount);
+                motor.disableOutputs();
+                g_profileCount++;
+                Debug.printf("Profile %d complete\n", g_profileCount);
+                delay(500);
+            }
         }
 
         g_status = CMD_IDLE;
@@ -238,7 +259,7 @@ void loop() {
     }
 
     // -----------------------------------------------------------------------
-    case CMD_SEND_DATA: // Stream buffered EEPROM data to control station
+    case CMD_SEND_DATA: // Stream buffered flash data to control station
     {
         Debug.println("Sending stored sensor data");
         profileManager.sendStoredData();
@@ -285,15 +306,18 @@ void loop() {
 
         char packet[OUTPUT_LEN];
         snprintf(packet, OUTPUT_LEN,
-                 "{\"company_number\":\"EX10\","
-                 "\"pressure\":\"%.2f\","
-                 "\"depth\":\"%.2f\","
-                 "\"temperature\":\"%.2f\","
-                 "\"mseconds\":\"%lu\"}",
-                 sensors.pressure(),
-                 sensors.depth(),
-                 sensors.temperature(),
-                 millis());
+                 "{\"company_number\":\"%s\","
+                 "\"time_s\":%.2f,"
+                 "\"pressure_kpa\":%.2f,"
+                 "\"depth_m\":%.2f,"
+                 "\"phase\":\"%s\","
+                 "\"sensor_depth_m\":%.2f}",
+                 COMPANY_NUMBER,
+                 static_cast<float>(millis()) / 1000.0f,
+                 sensors.pressure() / 1000.0f,
+                 sensors.referenceDepthForPhase("live"),
+                 "live",
+                 sensors.sensorDepth());
 
         comms.sendMessage(packet, 1000);
         Debug.println("Live snapshot sent");

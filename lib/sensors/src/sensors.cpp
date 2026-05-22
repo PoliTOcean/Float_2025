@@ -2,6 +2,7 @@
 #include "config.h"
 #include "led.h"
 #include <Wire.h>
+#include <cstring>
 #include <DebugSerial.h>
 
 /*
@@ -73,12 +74,30 @@ void SensorManager::read() {
 }
 
 float SensorManager::depth() {
+    return bottomDepth();
+}
+
+float SensorManager::sensorDepth() {
     return depthFromPressure(_bar02.pressure(MS5837::Pa));
 }
 
 float SensorManager::depthFromPressure(float pressurePa) const {
-    return (pressurePa - _atmPressurePa) / (WATER_DENSITY_FRESH * GRAVITY)
-           + FLOAT_LENGTH;
+    return (pressurePa - _atmPressurePa) / (WATER_DENSITY_FRESH * GRAVITY);
+}
+
+float SensorManager::bottomDepth() {
+    return sensorDepth() + SENSOR_TO_BOTTOM_M;
+}
+
+float SensorManager::topDepth() {
+    return sensorDepth() - SENSOR_TO_TOP_M;
+}
+
+float SensorManager::referenceDepthForPhase(const char* phase) {
+    if (phase != nullptr && strcmp(phase, "hold_40cm") == 0) {
+        return topDepth();
+    }
+    return bottomDepth();
 }
 
 float SensorManager::pressure() {
