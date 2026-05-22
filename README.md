@@ -271,7 +271,7 @@ stateDiagram-v2
     
     BALANCE --> IDLE: Balance Complete
     SEND_DATA --> IDLE: Data Sent
-    CLEAR_DATA --> IDLE: EEPROM Cleared
+    CLEAR_DATA --> IDLE: Flash Log Cleared
     UPDATE_PID --> IDLE: Gains Updated
     TEST_SPEED --> IDLE: Speed Stored
     TEST_STEPS --> IDLE: Test Move Complete
@@ -316,7 +316,7 @@ If the acknowledgement doesn't arrive within that time span, the command commit 
 
 When waiting for the command commit acknowledgement, other command requests will be ignored as well.   
 
-As already mentioned, after command completion the FLOAT will try to send an idle acknowledgement to signal that it is listening for a new command: together with the idle state, this acknowledgement can also inform about the presence of new EEPROM-buffered profile data that has to be sent to the CS. After an idle acknowledgement is received, a new command can be accepted.
+As already mentioned, after command completion the FLOAT will try to send an idle acknowledgement to signal that it is listening for a new command: together with the idle state, this acknowledgement can also inform about the presence of new flash-backed profile data that has to be sent to the CS. After an idle acknowledgement is received, a new command can be accepted.
 
 To maintain consistency with the status stored on the ESPB, and hence with the GUI visuals, the FLOAT grants to send the acknowledgement signalling a command commit only when the commit can be given for sure. In the same way, if the acknowledgement fails to be sent due to connection issues, the command is not committed.
 
@@ -579,7 +579,7 @@ pio test -e espA
 Tutti i comandi vanno eseguiti dalla root del progetto:
 
 ```bash
-cd /Users/filippo/Documents/politocean/Float_2025
+cd Float_2025
 ```
 
 Per compilare e caricare i firmware principali:
@@ -607,8 +607,8 @@ pio test -e espA
 Per lanciare un singolo test:
 
 ```bash
-pio test -e espA -f unit/motor/test_max_steps
-pio test -e espA -f unit/motor/test_speed
+pio test -e espA -f unit_hw/motor/test_max_steps
+pio test -e espA -f unit_hw/motor/test_speed
 pio test -e espA -f integration/test_screw_lead_20mm
 pio test -e espA -f integration/test_homing_only
 pio test -e espA -f integration/test_tof_reading
@@ -637,8 +637,8 @@ Test disponibili:
 
 | Test | Comando | Cosa verifica |
 |:-----|:--------|:--------------|
-| `test_max_steps` | `pio test -e espA -f unit/motor/test_max_steps` | Muove solo il motore fino alla massima estensione sicura partendo da posizione logica 0 |
-| `test_speed` | `pio test -e espA -f unit/motor/test_speed` | Muove solo il motore in 6 movimenti alternati da 40 mm, aumentando velocita e accelerazione fino a 2300 |
+| `test_max_steps` | `pio test -e espA -f unit_hw/motor/test_max_steps` | Muove solo il motore fino alla massima estensione sicura partendo da posizione logica 0 |
+| `test_speed` | `pio test -e espA -f unit_hw/motor/test_speed` | Muove solo il motore in 6 movimenti alternati da 40 mm, aumentando velocita e accelerazione fino a 2300 |
 | `test_screw_lead_20mm` | `pio test -e espA -f integration/test_screw_lead_20mm` | Esegue homing TOF, muove il motore di 20 mm e confronta il delta TOF interno |
 | `test_motor_direction` | `pio test -e espA -f integration/test_motor_direction` | Muove solo il motore avanti/indietro e verifica la direzione logica; di default non usa il TOF |
 | `test_tof_reading` | `pio test -e espA -f integration/test_tof_reading` | Inizializza solo il TOF e verifica letture valide per circa 30 s |
@@ -677,8 +677,8 @@ Questo firmware non esegue homing: all'avvio assegna una posizione logica centra
 ### Test Layout
 
 Hardware-oriented tests are stored under `test/`:
-- `test/unit/motor/test_max_steps` checks safe maximum extension from a known zero
-- `test/unit/motor/test_speed` checks alternating 40 mm moves while speed and acceleration increase up to 2300
+- `test/unit_hw/motor/test_max_steps` checks safe maximum extension from a known zero
+- `test/unit_hw/motor/test_speed` checks alternating 40 mm moves while speed and acceleration increase up to 2300
 - `test/integration/test_screw_lead_20mm` checks the configured screw pitch, starts, and lead with one 20 mm move measured internally by TOF
 - `test/integration/test_tof_reading` checks that the TOF sensor initializes and returns valid distance samples for about 30 seconds
 - `test/integration/test_homing_only` checks TOF-based homing
