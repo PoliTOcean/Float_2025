@@ -8,31 +8,38 @@
 
 ## TABLE OF CONTENTS
 
-1. [Project Overview](#project-overview)
-   - [Introduction and Requirements](#introduction-and-requirements)
-   - [System Behavior](#system-behavior)
-2. [Hardware Configuration](#hardware-configuration)
-   - [Hardware Used](#hardware-used)
-   - [Pin Mapping](#pin-mapping)
-   - [I2C Device Addresses](#i2c-device-addresses)
-3. [System Architecture](#system-architecture)
-   - [Deployment Diagram](#deployment-diagram)
-   - [Software Structure](#software-structure)
-   - [ESPA State Machine](#espa-state-machine)
-4. [Communication Protocol](#communication-protocol)
-   - [Command Lifecycle](#command-lifecycle)
-   - [ESPB Bridge Role](#espb-bridge-role)
-   - [FLOAT Commands](#float-commands)
-   - [STATUS Command: ESPB Response](#status-command-espb-response)
-5. [LED Status Indicators](#led-status-indicators)
-6. [Development and Testing](#development-and-testing)
-   - [PlatformIO Environments](#platformio-environments)
-   - [Avvio da CLI](#avvio-da-cli)
-   - [Test da CLI](#test-da-cli)
-   - [Controllo manuale del solo motore](#controllo-manuale-del-solo-motore)
-   - [Test Layout](#test-layout)
-7. [Utilities and Resources](#utilities-and-resources)
-8. [Glossary](#glossary)
+- [PoliTOcean Float 2025 - Technical Documentation](#politocean-float-2025---technical-documentation)
+  - [TABLE OF CONTENTS](#table-of-contents)
+  - [PROJECT OVERVIEW](#project-overview)
+    - [Introduction and Requirements](#introduction-and-requirements)
+    - [System Behavior](#system-behavior)
+  - [HARDWARE CONFIGURATION](#hardware-configuration)
+    - [Hardware Used](#hardware-used)
+    - [Pin Mapping](#pin-mapping)
+      - [ESPA (Float Controller) Pin Mapping:](#espa-float-controller-pin-mapping)
+      - [ESPB (Communication Bridge) Pin Mapping:](#espb-communication-bridge-pin-mapping)
+    - [I2C Device Addresses:](#i2c-device-addresses)
+  - [SYSTEM ARCHITECTURE](#system-architecture)
+    - [Deployment Diagram](#deployment-diagram)
+    - [Software Structure](#software-structure)
+    - [ESPA State Machine](#espa-state-machine)
+  - [COMMUNICATION PROTOCOL](#communication-protocol)
+    - [Command Lifecycle](#command-lifecycle)
+    - [ESPB Bridge Role](#espb-bridge-role)
+    - [FLOAT Commands](#float-commands)
+    - [STATUS COMMAND: ESPB RESPONSE](#status-command-espb-response)
+    - [GUI / ESPB / ESPA Protocol Contract](#gui--espb--espa-protocol-contract)
+  - [LED STATUS INDICATORS](#led-status-indicators)
+    - [ESPA (Float Board) LED States:](#espa-float-board-led-states)
+    - [ESPB (Communication Bridge) LED States:](#espb-communication-bridge-led-states)
+  - [DEVELOPMENT AND TESTING](#development-and-testing)
+    - [PlatformIO Environments](#platformio-environments)
+    - [Avvio da CLI](#avvio-da-cli)
+    - [Test da CLI](#test-da-cli)
+    - [Controllo manuale del solo motore](#controllo-manuale-del-solo-motore)
+    - [Test Layout](#test-layout)
+  - [UTILITIES AND RESOURCES](#utilities-and-resources)
+  - [GLOSSARY](#glossary)
 
 --------------------------------------------------------------------------
 
@@ -61,8 +68,8 @@ The FLOAT must complete **two vertical profiles** using a buoyancy engine (fluid
 
 **Data Collection & Transmission:**
 
-- Collect depth/pressure measurements every **5 seconds** during both profiles (minimum 20 data packets)
-- Store data on microSD with JSON format containing: timestamp, depth, pressure, team code
+- Collect depth/pressure measurements during both profiles and transmit judge packets every **5 seconds** (minimum 20 data packets)
+- Store data in ESP32 internal flash as a LittleFS CSV containing: company number, profile id, time, pressure, judge/reference depth, phase, and raw sensor depth
 - After recovery, transmit all collected data wirelessly to the Mission Station
 - Data packets must show **7 sequential measurements** (spanning 30 seconds at 5-second intervals: 0, 5, 10, 15, 20, 25, 30) confirming proper depth maintenance at both 2.5m and 0.4m
 
@@ -72,7 +79,7 @@ The FLOAT must complete **two vertical profiles** using a buoyancy engine (fluid
 - CS GUI plots depth over time using received data (minimum 20 data packets required)
 - Graph must display time (X-axis) vs depth (Y-axis) for both completed profiles
 
-**Current firmware storage note:** the active implementation stores compact profile records in ESP32 EEPROM (`pressure`, `temperature`) every `PERIOD_EEPROM_WRITE` (5 s) and serializes them as JSON packets when requested. The legacy serial command name is still `CLEAR_SD`, but it currently clears the EEPROM profile buffer.
+**Current firmware storage note:** the active implementation uses the internal flash CSV log (`FLASH_LOG_PATH`) as the primary mission data source. EEPROM compact records remain only as an internal legacy buffer. The legacy serial command name is still `CLEAR_SD`, but it now resets the flash CSV log and the legacy EEPROM buffer.
 
 **Auto Mode (AM):**
 
@@ -86,7 +93,7 @@ An autonomous operating mode that triggers profile execution in case of connecti
 
 The general idea is that the FLOAT provides some micro-services that the CS can activate by sending commands to it. Every command can be requested at any moment, with the only limit that a command can be accepted by the FLOAT only when the previous one has been completed (more info on command cycle later). 
 
-The FLOAT has two main logical states: the command execution one, and the idle one in which it waits for the new command. In idle state, the FLOAT can have buffered EEPROM data from the last completed profile that can be sent to the CS.
+The FLOAT has two main logical states: the command execution one, and the idle one in which it waits for the new command. In idle state, the FLOAT can have buffered flash data from the last completed profile that can be sent to the CS.
 
 --------------------------------------------------------------------------
 
@@ -225,7 +232,8 @@ The project follows a modular architecture with separate compilation units:
 - **Communication** (`lib/comms`) - ESP-NOW wireless protocol and ElegantOTA session management
 - **Sensors** (`lib/sensors`) - Bar02 pressure/depth and INA219 battery monitoring
 - **PID Controller** (`lib/pid`) - depth control algorithm with runtime gain updates
-- **Profile Manager** (`lib/profile`) - mission profile execution and EEPROM-backed profile logging
+- **Profile Manager** (`lib/profile`) - mission profile execution and flash-backed mission logging
+- **Flash Storage** (`lib/flash_storage`) - LittleFS CSV mission log and replay helpers
 - **LED Controller** (`lib/led`) - RGB status indication system
 
 ### ESPA State Machine
@@ -394,12 +402,12 @@ Table of FLOAT commands with relative effects and acknowledgements:
 
 |    Cmd string    | Cmd ESPA number | Cmd effects                                                                                                                                                     |       ESPA ack string       |      ESPA ack effects on ESPB state       |
 | :--------------: | :-------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------: | :---------------------------------------: |
-|        GO        |        1        | Performs a profile, measures pressure/depth, and stores compact records in EEPROM                                                                                 |          GO_RECVD           |    status to 2 (command execution)<br>    |
-|    LISTENING     |        2        | Streams the last EEPROM-backed profile as JSON packets, followed by `STOP_DATA`. Data remains available until cleared or overwritten by a new profile            |     Ack is data itself      |  status to 2 after first package arrival  |
+|        GO        |        1        | Performs the two MATE vertical profiles, sends the pre-descent data packet before the first descent, and logs pressure/depth records to flash CSV                 |          GO_RECVD           |    status to 2 (command execution)<br>    |
+|    LISTENING     |        2        | Streams flash CSV records as JSON data packets at 5-second cadence, followed by `STOP_DATA`                                                                      |     Ack is data itself      |  status to 2 after first package arrival  |
 |     BALANCE      |        3        | Extends the syringe to the safe maximum, holds for 5 s, then retracts to the safe margin                                                                          |         CMD3_RECVD          |                status to 2                |
-|     CLEAR_SD     |        4        | Clears the EEPROM profile buffer. The command string is kept as `CLEAR_SD` for compatibility                                                                      |         CMD4_RECVD          |                status to 2                |
+|     CLEAR_SD     |        4        | Clears and recreates the flash CSV log, and clears the legacy EEPROM buffer. The command string is kept as `CLEAR_SD` for compatibility                          |         CMD4_RECVD          |                status to 2                |
 | SWITCH_AUTO_MODE |        5        | Toggles FLOAT Auto Mode                                                                                                                                          |       SWITCH_AM_RECVD       | status to 2, AM activation state toggled  |
-|   SEND_PACKAGE   |        6        | Sends a single live JSON snapshot containing company number, pressure, depth, temperature, and milliseconds                                                       |  Ack is the package itself  |                status to 2                |
+|   SEND_PACKAGE   |        6        | Sends a single live JSON snapshot containing company number, time, pressure, judge/reference depth, phase, and raw sensor depth                                  |  Ack is the package itself  |                status to 2                |
 |    TRY_UPLOAD    |        7        | Starts the ElegantOTA access point on ESPA for a 5-minute upload window, then restores ESP-NOW                                                                    |       TRY_UPLOAD_RECVD      |                status to 2                |
 | `PARAMS kp ki kd` |        8        | Updates PID gains at runtime                                                                                                                                    |      CHNG_PARMS_RECVD       |                status to 2                |
 | `TEST_FREQ freq` |        9        | Sets manual test movement speed, clamped to 10-1200 steps/s                                                                                                      |       TEST_FREQ_RECVD       |                status to 2                |
@@ -423,6 +431,7 @@ ESPB response to **STATUS** command is composed by five parts of information: ES
 
 | ESPB state string | ESPB state number | State description                                                                                                     |
 | :---------------: | :---------------: | --------------------------------------------------------------------------------------------------------------------- |
+|      UNKNOWN      |        -1         | ESPB has not received any state message from ESPA since boot                                                          |
 |     CONNECTED     |         0         | The FLOAT is listening for new command. Previous command succeeded                                                    |
 | CONNECTED_W_DATA  |         1         | The FLOAT is listening for new command and has some new data from last profile to be sent. Previous command succeeded |
 |   EXECUTING_CMD   |         2         | FLOAT is executing a command                                                                                          |
@@ -484,6 +493,31 @@ ESPB response to **STATUS** command is composed by five parts of information: ES
 | `RSSI: <dBm>` | Last ESP-NOW packet RSSI captured by ESPB promiscuous callback |
 
 **Example of ESPB state response:** `CONNECTED_W_DATA | AUTO_MODE_NO | CONN_OK | BATTERY: 12450 | RSSI: -63`
+
+At ESPB boot, before any ESPA packet is received, a status request may return:
+`UNKNOWN | AUTO_MODE_NO | CONN_LOST | BATTERY: 0 | RSSI: 0`.
+
+### GUI / ESPB / ESPA Protocol Contract
+
+The GUI sends command strings to ESPB over USB serial. ESPB parses the string, sends the command number to ESPA over ESP-NOW, and forwards ESPA acknowledgements/data back to the GUI.
+
+| GUI command | ESPA command number | ESPA acknowledgement / response |
+| :---------- | :-----------------: | :------------------------------ |
+| `GO` | 1 | `GO_RECVD` |
+| `LISTENING` | 2 | Stored data packets, then `STOP_DATA` |
+| `BALANCE` | 3 | `CMD3_RECVD` |
+| `CLEAR_SD` | 4 | `CMD4_RECVD` |
+| `SWITCH_AUTO_MODE` | 5 | `SWITCH_AM_RECVD` |
+| `SEND_PACKAGE` | 6 | Live JSON packet |
+| `TRY_UPLOAD` | 7 | `TRY_UPLOAD_RECVD` |
+| `PARAMS kp ki kd` | 8 | `CHNG_PARMS_RECVD` |
+| `TEST_FREQ freq` | 9 | `TEST_FREQ_RECVD` |
+| `TEST_STEPS n` | 10 | `TEST_STEPS_RECVD` |
+| `DEBUG` | 11 | `DEBUG_MODE_RECVD` |
+| `HOME_MOTOR` | 12 | `HOME_RECVD` |
+| `STATUS` | - | ESPB local status line with five ` | `-separated fields |
+
+The peer MAC addresses are configured centrally in `include/config.h`: `MAC_ESPA` is used by ESPB, and `MAC_ESPB` is used by ESPA.
 
 --------------------------------------------------------------------------
 
@@ -583,6 +617,22 @@ pio test -e espA -f integration/test_motor_direction
 pio test -e espA -f integration/test_tof_motor_accuracy
 ```
 
+Per testare ESPB senza ESPA accesa:
+
+```bash
+pio test -e espB -f unit_hw/espb_bridge/test_parser
+pio test -e espB -f unit_hw/espb_bridge/test_status_format
+pio test -e espB -f unit_hw/espb_bridge/test_protocol_contract
+```
+
+Per testare il bridge reale tra ESPB ed ESPA, caricare prima il firmware reale `espA`, attendere che ESPA sia in idle, poi lanciare:
+
+```bash
+pio test -e espB -f integration/test_espnow_bridge
+```
+
+Questo test usa solo il comando dummy `0` e `SWITCH_AUTO_MODE`; non avvia profili e non muove il motore.
+
 Test disponibili:
 
 | Test | Comando | Cosa verifica |
@@ -595,6 +645,10 @@ Test disponibili:
 | `test_homing_only` | `pio test -e espA -f integration/test_homing_only` | Esegue solo l'homing con TOF |
 | `test_homing_move_to_max` | `pio test -e espA -f integration/test_homing_move_to_max` | Esegue homing TOF e poi va alla massima estensione sicura |
 | `test_tof_motor_accuracy` | `pio test -e espA -f integration/test_tof_motor_accuracy` | Confronta distanza TOF e posizione motore dopo l'homing |
+| `test_parser` | `pio test -e espB -f unit_hw/espb_bridge/test_parser` | Verifica parsing comandi GUI/Serial verso pacchetti ESPA senza ESPA accesa |
+| `test_status_format` | `pio test -e espB -f unit_hw/espb_bridge/test_status_format` | Verifica stato cached ESPB e formato `STATUS` a cinque campi |
+| `test_protocol_contract` | `pio test -e espB -f unit_hw/espb_bridge/test_protocol_contract` | Blocca la coerenza comandi/ACK tra GUI, ESPB ed ESPA |
+| `test_espnow_bridge` | `pio test -e espB -f integration/test_espnow_bridge` | Verifica ESP-NOW reale con ESPA firmware reale acceso, senza movimenti |
 
 I test `test_max_steps`, `test_speed` e `test_motor_direction` sono quelli utili per muovere solo il motore senza fare homing TOF. Prima di lanciarli, assicurarsi che il pistone sia lontano dai fine corsa meccanici e che possa muoversi in entrambe le direzioni.
 
@@ -658,7 +712,7 @@ Hardware-oriented tests are stored under `test/`:
 - **CS (Control Station)**: Ground-based computer running the GUI application
 - **ESPA**: ESP32 mounted on the Float board (primary controller)
 - **ESPB**: ESP32 communication bridge between Float and CS
-- **EEPROM Profile Buffer**: Current onboard storage used for compact profile records before JSON transmission
+- **Flash Profile Log**: Current onboard LittleFS CSV storage used before JSON transmission
 - **FastAccelStepper**: Timer/task-driven stepper library used by `MotorController`
 - **MotionController**: Firmware layer that combines motor, TOF, LEDs, debug, timeouts, and emergency stops for safe movement routines
 - **Commit a command**: To accept a sent command. After commit, command execution and success is ideally granted
