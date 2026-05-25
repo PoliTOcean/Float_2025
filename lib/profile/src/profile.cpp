@@ -114,7 +114,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         pidController.reset();
         if (isDeepTarget) {
             // Pre-position syringe to kick-start the deep descent only.
-            motor.moveTo(500);
+            motionController.moveToWithTimeout(500, 0);
         }
     } else {
         ledController.setState(LEDState::PROFILE);
@@ -132,6 +132,11 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     while (true) {
         ledController.update();
         yield();
+
+        if (motionController.remoteStopRequested()) {
+            Debug.println("Profile phase: remote stop");
+            break;
+        }
 
         // Abort if phase timeout exceeded
         if (millis() - phaseStart > static_cast<unsigned long>(timeoutSec * 1000UL)) {
@@ -176,7 +181,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
                 if (isBottomTarget) {
                     motionController.moveToMax();
                 } else {
-                    motor.moveTo(MOTOR_ENDSTOP_MARGIN); // Surface
+                    motionController.moveToWithTimeout(MOTOR_ENDSTOP_MARGIN, 0); // Surface
                 }
                 motorCommanded = true;
             }
@@ -215,7 +220,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         // ---- PID phase ----
         const float pidOutput = pidController.compute(targetDepth, currentDepth);
         if (fabsf(pidOutput) > 1.0f) {
-            motor.moveSteps(static_cast<long>(pidOutput));
+            motionController.moveToWithTimeout(motor.position() + static_cast<long>(pidOutput), 0);
         }
 
         // --- EEPROM write tick (also checks hold condition for PID phase) ---

@@ -41,25 +41,6 @@
 #include "flash_storage.h"
 
 // ---------------------------------------------------------------------------
-// State machine status codes
-// ---------------------------------------------------------------------------
-enum Command : uint8_t {
-    CMD_IDLE         = 0,
-    CMD_GO           = 1,
-    CMD_SEND_DATA    = 2,
-    CMD_BALANCE      = 3,
-    CMD_CLEAR_EEPROM = 4,
-    CMD_AUTO_MODE    = 5,
-    CMD_SEND_PACKAGE = 6,
-    CMD_OTA          = 7,
-    CMD_UPDATE_PID   = 8,
-    CMD_SET_SPEED    = 9,
-    CMD_TEST_STEPS   = 10,
-    CMD_DEBUG_MODE   = 11,
-    CMD_HOME         = 12,
-};
-
-// ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 static uint8_t  g_status          = CMD_IDLE;
@@ -203,7 +184,7 @@ void loop() {
             g_idle = true;
             unsigned long t0 = millis();
             while (millis() - t0 < PERIOD_CONN_CHECK &&
-                   comms.lastCommand().command == 0) {
+                   comms.lastCommand().command == CMD_IDLE) {
                 ledController.update();
                 delay(10);
             }
@@ -240,12 +221,18 @@ void loop() {
                 Debug.printf("Profile %d: PID descent to 2.5 m bottom reference\n",
                              g_profileCount + 1);
                 profileManager.measure(TARGET_DEPTH, STAT_TIME, TIMEOUT_PID_TIME);
+                if (!motionController.motionAllowed()) {
+                    break;
+                }
 
                 delay(500);
 
                 Debug.printf("Profile %d: PID ascent to 40 cm top reference\n",
                              g_profileCount + 1);
                 profileManager.measure(TARGET_SHALLOW_BOTTOM_DEPTH, STAT_TIME, TIMEOUT_ASCENT);
+                if (!motionController.motionAllowed()) {
+                    break;
+                }
 
                 motor.disableOutputs();
                 g_profileCount++;
@@ -397,6 +384,16 @@ void loop() {
                 Debug.println("Remote homing complete");
             }
         }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_STOP: // Remote emergency stop
+    {
+        motionController.emergencyStop("remote stop");
+        comms.sendMessage(CMD13_ACK, 1000);
+        comms.clearCommand();
         g_status = CMD_IDLE;
         break;
     }

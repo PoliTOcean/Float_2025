@@ -317,7 +317,7 @@ void loop() {
     } else if (parsed.type == EspbParsedCommandType::Status) {
       output_message dummy;
       memset(&dummy, 0, sizeof(dummy));
-      dummy.command = 0;
+      dummy.command = CMD_IDLE;
 
       const bool connectionOk = send_command(dummy, MAX_CONN_TIME);
       char statusLine[128];

@@ -404,7 +404,7 @@ Table of FLOAT commands with relative effects and acknowledgements:
 | :--------------: | :-------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------: | :---------------------------------------: |
 |        GO        |        1        | Performs the two MATE vertical profiles, sends the pre-descent data packet before the first descent, and logs pressure/depth records to flash CSV                 |          GO_RECVD           |    status to 2 (command execution)<br>    |
 |    LISTENING     |        2        | Streams flash CSV records as JSON data packets at 5-second cadence, followed by `STOP_DATA`                                                                      |     Ack is data itself      |  status to 2 after first package arrival  |
-|     BALANCE      |        3        | Extends the syringe to the safe maximum, holds for 5 s, then retracts to the safe margin                                                                          |         CMD3_RECVD          |                status to 2                |
+|     BALANCE      |        3        | Cycles safe max extension and TOF homing with 5 s holds until Bar02 pressure rises above its startup balance baseline by `BALANCE_STOP_PRESSURE_DELTA_KPA`        |         CMD3_RECVD          |                status to 2                |
 |     CLEAR_SD     |        4        | Clears and recreates the flash CSV log, and clears the legacy EEPROM buffer. The command string is kept as `CLEAR_SD` for compatibility                          |         CMD4_RECVD          |                status to 2                |
 | SWITCH_AUTO_MODE |        5        | Toggles FLOAT Auto Mode                                                                                                                                          |       SWITCH_AM_RECVD       | status to 2, AM activation state toggled  |
 |   SEND_PACKAGE   |        6        | Sends a single live JSON snapshot containing company number, time, pressure, judge/reference depth, phase, and raw sensor depth                                  |  Ack is the package itself  |                status to 2                |
@@ -414,6 +414,7 @@ Table of FLOAT commands with relative effects and acknowledgements:
 | `TEST_STEPS n`   |       10        | Moves the motor by `n` relative steps at the current test speed                                                                                                  |      TEST_STEPS_RECVD       |                status to 2                |
 |      DEBUG       |       11        | Toggles remote debug forwarding through `DebugSerial`                                                                                                            |      DEBUG_MODE_RECVD       |                status to 2                |
 |    HOME_MOTOR    |       12        | Runs TOF-based homing remotely                                                                                                                                   |          HOME_RECVD         |                status to 2                |
+|       STOP       |       13        | Triggers a remote emergency stop, stops the motor, disables outputs, and returns to idle                                                                          |         STOP_RECVD          |                status to 2                |
 |      STATUS      |        -        | Requests stale ESPB status plus AM state, WiFi connection state, battery millivolts, and last RSSI                                                               |              -              |                     -                     |
 
 Once a command is completed, ESPA acknowledgement can be:
@@ -515,6 +516,7 @@ The GUI sends command strings to ESPB over USB serial. ESPB parses the string, s
 | `TEST_STEPS n` | 10 | `TEST_STEPS_RECVD` |
 | `DEBUG` | 11 | `DEBUG_MODE_RECVD` |
 | `HOME_MOTOR` | 12 | `HOME_RECVD` |
+| `STOP` | 13 | `STOP_RECVD` |
 | `STATUS` | - | ESPB local status line with five ` | `-separated fields |
 
 The peer MAC addresses are configured centrally in `include/config.h`: `MAC_ESPA` is used by ESPB, and `MAC_ESPB` is used by ESPA.
@@ -562,6 +564,7 @@ The FLOAT is equipped with RGB LEDs on both ESP32 boards that provide visual fee
 | Environment | Purpose | Main Source |
 |:------------|:--------|:------------|
 | `espA` | Float controller firmware with sensors, TOF homing, motion control, PID, ESP-NOW, and OTA | `src/espA/main.cpp` |
+| `espA_pool` | ESPA firmware compiled with conservative 70 cm pool-test targets (`POOL_TEST_PROFILE`) | `src/espA/main.cpp` |
 | `espB` | USB-to-ESP-NOW bridge for the Control Station | `src/espB/main.cpp` |
 | `espA_manual_keyboard` | Bench firmware for serial keyboard continuous motor movement without homing | `src/espA_manual_keyboard/main.cpp` |
 
@@ -569,6 +572,7 @@ Common commands:
 
 ```bash
 pio run -e espA
+pio run -e espA_pool
 pio run -e espB
 pio run -e espA_manual_keyboard
 pio test -e espA
@@ -587,6 +591,12 @@ Per compilare e caricare i firmware principali:
 ```bash
 pio run -e espA -t upload
 pio run -e espB -t upload
+```
+
+Per una prova conservativa in piscina bassa da circa 70 cm, caricare ESPA con:
+
+```bash
+pio run -e espA_pool -t upload
 ```
 
 Per aprire il monitor seriale a 115200 baud:

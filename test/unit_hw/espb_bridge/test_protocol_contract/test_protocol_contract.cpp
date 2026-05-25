@@ -22,15 +22,15 @@ void tearDown() {}
 void test_protocol_contract_table_matches_parser() {
     size_t count = 0;
     const EspbProtocolCommand* commands = espbProtocolCommands(count);
-    TEST_ASSERT_EQUAL_UINT8(12, count);
+    TEST_ASSERT_EQUAL_UINT8(13, count);
 
     for (size_t i = 0; i < count; ++i) {
         char commandLine[64];
-        if (commands[i].commandCode == 8) {
+        if (commands[i].commandCode == CMD_UPDATE_PID) {
             snprintf(commandLine, sizeof(commandLine), "%s 1 2 3", commands[i].commandText);
-        } else if (commands[i].commandCode == 9) {
+        } else if (commands[i].commandCode == CMD_SET_SPEED) {
             snprintf(commandLine, sizeof(commandLine), "%s 300", commands[i].commandText);
-        } else if (commands[i].commandCode == 10) {
+        } else if (commands[i].commandCode == CMD_TEST_STEPS) {
             snprintf(commandLine, sizeof(commandLine), "%s -100", commands[i].commandText);
         } else {
             snprintf(commandLine, sizeof(commandLine), "%s", commands[i].commandText);
@@ -61,6 +61,7 @@ void test_ack_constants_match_gui_contract() {
     TEST_ASSERT_EQUAL_STRING("TEST_STEPS_RECVD", CMD10_ACK);
     TEST_ASSERT_EQUAL_STRING("DEBUG_MODE_RECVD", CMD11_ACK);
     TEST_ASSERT_EQUAL_STRING("HOME_RECVD", CMD12_ACK);
+    TEST_ASSERT_EQUAL_STRING("STOP_RECVD", CMD13_ACK);
 }
 
 void test_status_tokens_are_gui_parseable() {

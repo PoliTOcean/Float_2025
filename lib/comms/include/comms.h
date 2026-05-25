@@ -28,7 +28,7 @@ public:
 
     // Access the last received command (set by the ESP-NOW receive callback)
     const output_message& lastCommand() const { return _received; }
-    void clearCommand() { _received.command = 0; }
+    void clearCommand() { _received.command = CMD_IDLE; }
 
     // Outgoing packet — callers fill status_to_send.charge before calling sendMessage()
     input_message status_to_send;

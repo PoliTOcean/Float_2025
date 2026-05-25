@@ -8,6 +8,25 @@
 #define EEPROM_SIZE     512                 // EEPROM allocation size in bytes
 #define BATT_THRESH     12000                // Battery threshold in mV for low battery warning
 
+// Command codes shared by GUI/NEXUS, ESPB and ESPA.
+// Append new commands at the end to keep older tools compatible.
+enum FloatCommand : uint8_t {
+  CMD_IDLE         = 0,
+  CMD_GO           = 1,
+  CMD_SEND_DATA    = 2,
+  CMD_BALANCE      = 3,
+  CMD_CLEAR_EEPROM = 4,
+  CMD_AUTO_MODE    = 5,
+  CMD_SEND_PACKAGE = 6,
+  CMD_OTA          = 7,
+  CMD_UPDATE_PID   = 8,
+  CMD_SET_SPEED    = 9,
+  CMD_TEST_STEPS   = 10,
+  CMD_DEBUG_MODE   = 11,
+  CMD_HOME         = 12,
+  CMD_STOP         = 13,
+};
+
 // List of messages for the ESPA acknowledgements: CS has to be aware of these 
 #define IDLE_ACK        "FLOAT_IDLE"        
 #define IDLE_W_DATA_ACK "FLOAT_IDLE_W_DATA"
@@ -21,6 +40,7 @@
 #define CMD10_ACK       "TEST_STEPS_RECVD"
 #define CMD11_ACK       "DEBUG_MODE_RECVD"
 #define CMD12_ACK       "HOME_RECVD"
+#define CMD13_ACK       "STOP_RECVD"
 
 // Sensor data structure
 typedef struct sensor_data {
@@ -39,7 +59,7 @@ typedef struct output_message {
   float params[3];
   int32_t steps;
   uint16_t freq;
-  uint8_t command = 0;
+  uint8_t command = CMD_IDLE;
 } output_message;
 
 // MAC addresses - UPDATE THESE TO YOUR ACTUAL MAC ADDRESSES

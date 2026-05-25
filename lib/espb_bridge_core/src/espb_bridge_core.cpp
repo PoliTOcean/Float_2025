@@ -9,18 +9,19 @@ namespace {
 constexpr size_t COMMAND_BUFFER_SIZE = 96;
 
 constexpr EspbProtocolCommand PROTOCOL_COMMANDS[] = {
-    {"GO", 1, CMD1_ACK},
-    {"LISTENING", 2, "DATA_OR_STOP_DATA"},
-    {"BALANCE", 3, CMD3_ACK},
-    {"CLEAR_SD", 4, CMD4_ACK},
-    {"SWITCH_AUTO_MODE", 5, CMD5_ACK},
-    {"SEND_PACKAGE", 6, "JSON_LIVE_PACKET"},
-    {"TRY_UPLOAD", 7, CMD7_ACK},
-    {"PARAMS", 8, CMD8_ACK},
-    {"TEST_FREQ", 9, CMD9_ACK},
-    {"TEST_STEPS", 10, CMD10_ACK},
-    {"DEBUG", 11, CMD11_ACK},
-    {"HOME_MOTOR", 12, CMD12_ACK},
+    {"GO", CMD_GO, CMD1_ACK},
+    {"LISTENING", CMD_SEND_DATA, "DATA_OR_STOP_DATA"},
+    {"BALANCE", CMD_BALANCE, CMD3_ACK},
+    {"CLEAR_SD", CMD_CLEAR_EEPROM, CMD4_ACK},
+    {"SWITCH_AUTO_MODE", CMD_AUTO_MODE, CMD5_ACK},
+    {"SEND_PACKAGE", CMD_SEND_PACKAGE, "JSON_LIVE_PACKET"},
+    {"TRY_UPLOAD", CMD_OTA, CMD7_ACK},
+    {"PARAMS", CMD_UPDATE_PID, CMD8_ACK},
+    {"TEST_FREQ", CMD_SET_SPEED, CMD9_ACK},
+    {"TEST_STEPS", CMD_TEST_STEPS, CMD10_ACK},
+    {"DEBUG", CMD_DEBUG_MODE, CMD11_ACK},
+    {"HOME_MOTOR", CMD_HOME, CMD12_ACK},
+    {"STOP", CMD_STOP, CMD13_ACK},
 };
 
 void zeroMessage(output_message& message) {
@@ -123,7 +124,7 @@ EspbParsedCommand espbParseSerialCommand(const char* line) {
             return parsed;
         }
 
-        parsed = makeForwardCommand(8);
+        parsed = makeForwardCommand(CMD_UPDATE_PID);
         parsed.message.params[0] = kp;
         parsed.message.params[1] = ki;
         parsed.message.params[2] = kd;
@@ -138,7 +139,7 @@ EspbParsedCommand espbParseSerialCommand(const char* line) {
             return parsed;
         }
 
-        parsed = makeForwardCommand(9);
+        parsed = makeForwardCommand(CMD_SET_SPEED);
         parsed.message.freq = static_cast<uint16_t>(freq);
         return parsed;
     }
@@ -151,16 +152,16 @@ EspbParsedCommand espbParseSerialCommand(const char* line) {
             return parsed;
         }
 
-        parsed = makeForwardCommand(10);
+        parsed = makeForwardCommand(CMD_TEST_STEPS);
         parsed.message.steps = static_cast<int32_t>(steps);
         return parsed;
     }
 
     for (const EspbProtocolCommand& command : PROTOCOL_COMMANDS) {
         if (strcmp(token, command.commandText) == 0) {
-            if (command.commandCode == 8 ||
-                command.commandCode == 9 ||
-                command.commandCode == 10 ||
+            if (command.commandCode == CMD_UPDATE_PID ||
+                command.commandCode == CMD_SET_SPEED ||
+                command.commandCode == CMD_TEST_STEPS ||
                 !hasNoExtraToken()) {
                 return parsed;
             }

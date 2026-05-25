@@ -29,15 +29,16 @@ void test_simple_commands_map_to_espa_codes() {
     };
 
     const Case cases[] = {
-        {"GO", 1},
-        {"LISTENING", 2},
-        {"BALANCE", 3},
-        {"CLEAR_SD", 4},
-        {"SWITCH_AUTO_MODE", 5},
-        {"SEND_PACKAGE", 6},
-        {"TRY_UPLOAD", 7},
-        {"DEBUG", 11},
-        {"HOME_MOTOR", 12},
+        {"GO", CMD_GO},
+        {"LISTENING", CMD_SEND_DATA},
+        {"BALANCE", CMD_BALANCE},
+        {"CLEAR_SD", CMD_CLEAR_EEPROM},
+        {"SWITCH_AUTO_MODE", CMD_AUTO_MODE},
+        {"SEND_PACKAGE", CMD_SEND_PACKAGE},
+        {"TRY_UPLOAD", CMD_OTA},
+        {"DEBUG", CMD_DEBUG_MODE},
+        {"HOME_MOTOR", CMD_HOME},
+        {"STOP", CMD_STOP},
     };
 
     for (const Case& testCase : cases) {
@@ -50,26 +51,26 @@ void test_simple_commands_map_to_espa_codes() {
 void test_parameterized_commands_fill_payload() {
     EspbParsedCommand params = espbParseSerialCommand("PARAMS 1.2 0.3 0.01");
     TEST_ASSERT_EQUAL_UINT8(commandType(EspbParsedCommandType::ForwardToEspA), commandType(params.type));
-    TEST_ASSERT_EQUAL_UINT8(8, params.message.command);
+    TEST_ASSERT_EQUAL_UINT8(CMD_UPDATE_PID, params.message.command);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.2f, params.message.params[0]);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.3f, params.message.params[1]);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.01f, params.message.params[2]);
 
     EspbParsedCommand freq = espbParseSerialCommand("TEST_FREQ 300");
     TEST_ASSERT_EQUAL_UINT8(commandType(EspbParsedCommandType::ForwardToEspA), commandType(freq.type));
-    TEST_ASSERT_EQUAL_UINT8(9, freq.message.command);
+    TEST_ASSERT_EQUAL_UINT8(CMD_SET_SPEED, freq.message.command);
     TEST_ASSERT_EQUAL_UINT16(300, freq.message.freq);
 
     EspbParsedCommand steps = espbParseSerialCommand("TEST_STEPS -100");
     TEST_ASSERT_EQUAL_UINT8(commandType(EspbParsedCommandType::ForwardToEspA), commandType(steps.type));
-    TEST_ASSERT_EQUAL_UINT8(10, steps.message.command);
+    TEST_ASSERT_EQUAL_UINT8(CMD_TEST_STEPS, steps.message.command);
     TEST_ASSERT_EQUAL_INT32(-100, steps.message.steps);
 }
 
 void test_status_is_local_command() {
     EspbParsedCommand parsed = espbParseSerialCommand("STATUS");
     TEST_ASSERT_EQUAL_UINT8(commandType(EspbParsedCommandType::Status), commandType(parsed.type));
-    TEST_ASSERT_EQUAL_UINT8(0, parsed.message.command);
+    TEST_ASSERT_EQUAL_UINT8(CMD_IDLE, parsed.message.command);
 }
 
 void test_invalid_commands_are_rejected() {
