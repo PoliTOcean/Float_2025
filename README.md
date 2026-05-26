@@ -34,9 +34,9 @@
     - [ESPB (Communication Bridge) LED States:](#espb-communication-bridge-led-states)
   - [DEVELOPMENT AND TESTING](#development-and-testing)
     - [PlatformIO Environments](#platformio-environments)
-    - [Avvio da CLI](#avvio-da-cli)
-    - [Test da CLI](#test-da-cli)
-    - [Controllo manuale del solo motore](#controllo-manuale-del-solo-motore)
+    - [CLI Startup](#cli-startup)
+    - [CLI Tests](#cli-tests)
+    - [Manual Motor-Only Control](#manual-motor-only-control)
     - [Test Layout](#test-layout)
   - [UTILITIES AND RESOURCES](#utilities-and-resources)
   - [GLOSSARY](#glossary)
@@ -578,43 +578,43 @@ pio run -e espA_manual_keyboard
 pio test -e espA
 ```
 
-### Avvio da CLI
+### CLI Startup
 
-Tutti i comandi vanno eseguiti dalla root del progetto:
+Run all commands from the project root:
 
 ```bash
 cd Float_2025
 ```
 
-Per compilare e caricare i firmware principali:
+To build and upload the main firmware targets:
 
 ```bash
 pio run -e espA -t upload
 pio run -e espB -t upload
 ```
 
-Per una prova conservativa in piscina bassa da circa 70 cm, caricare ESPA con:
+For a conservative shallow-pool test at about 70 cm, upload ESPA with:
 
 ```bash
 pio run -e espA_pool -t upload
 ```
 
-Per aprire il monitor seriale a 115200 baud:
+To open the serial monitor at 115200 baud:
 
 ```bash
 pio device monitor -e espA
 pio device monitor -e espB
 ```
 
-### Test da CLI
+### CLI Tests
 
-Per lanciare tutti i test disponibili sull'ambiente `espA`:
+To run all available tests for the `espA` environment:
 
 ```bash
 pio test -e espA
 ```
 
-Per lanciare un singolo test:
+To run a single test:
 
 ```bash
 pio test -e espA -f unit_hw/motor/test_max_steps
@@ -627,7 +627,7 @@ pio test -e espA -f integration/test_motor_direction
 pio test -e espA -f integration/test_tof_motor_accuracy
 ```
 
-Per testare ESPB senza ESPA accesa:
+To test ESPB without ESPA powered on:
 
 ```bash
 pio test -e espB -f unit_hw/espb_bridge/test_parser
@@ -635,54 +635,54 @@ pio test -e espB -f unit_hw/espb_bridge/test_status_format
 pio test -e espB -f unit_hw/espb_bridge/test_protocol_contract
 ```
 
-Per testare il bridge reale tra ESPB ed ESPA, caricare prima il firmware reale `espA`, attendere che ESPA sia in idle, poi lanciare:
+To test the real ESPB-to-ESPA bridge, first upload the real `espA` firmware, wait until ESPA is idle, then run:
 
 ```bash
 pio test -e espB -f integration/test_espnow_bridge
 ```
 
-Questo test usa solo il comando dummy `0` e `SWITCH_AUTO_MODE`; non avvia profili e non muove il motore.
+This test only uses the dummy command `0` and `SWITCH_AUTO_MODE`; it does not start profiles or move the motor.
 
-Test disponibili:
+Available tests:
 
-| Test | Comando | Cosa verifica |
+| Test | Command | What it checks |
 |:-----|:--------|:--------------|
-| `test_max_steps` | `pio test -e espA -f unit_hw/motor/test_max_steps` | Muove solo il motore fino alla massima estensione sicura partendo da posizione logica 0 |
-| `test_speed` | `pio test -e espA -f unit_hw/motor/test_speed` | Muove solo il motore in 6 movimenti alternati da 40 mm, aumentando velocita e accelerazione fino a 2300 |
-| `test_screw_lead_20mm` | `pio test -e espA -f integration/test_screw_lead_20mm` | Esegue homing TOF, muove il motore di 20 mm e confronta il delta TOF interno |
-| `test_motor_direction` | `pio test -e espA -f integration/test_motor_direction` | Muove solo il motore avanti/indietro e verifica la direzione logica; di default non usa il TOF |
-| `test_tof_reading` | `pio test -e espA -f integration/test_tof_reading` | Inizializza solo il TOF e verifica letture valide per circa 30 s |
-| `test_homing_only` | `pio test -e espA -f integration/test_homing_only` | Esegue solo l'homing con TOF |
-| `test_homing_move_to_max` | `pio test -e espA -f integration/test_homing_move_to_max` | Esegue homing TOF e poi va alla massima estensione sicura |
-| `test_tof_motor_accuracy` | `pio test -e espA -f integration/test_tof_motor_accuracy` | Confronta distanza TOF e posizione motore dopo l'homing |
-| `test_parser` | `pio test -e espB -f unit_hw/espb_bridge/test_parser` | Verifica parsing comandi GUI/Serial verso pacchetti ESPA senza ESPA accesa |
-| `test_status_format` | `pio test -e espB -f unit_hw/espb_bridge/test_status_format` | Verifica stato cached ESPB e formato `STATUS` a cinque campi |
-| `test_protocol_contract` | `pio test -e espB -f unit_hw/espb_bridge/test_protocol_contract` | Blocca la coerenza comandi/ACK tra GUI, ESPB ed ESPA |
-| `test_espnow_bridge` | `pio test -e espB -f integration/test_espnow_bridge` | Verifica ESP-NOW reale con ESPA firmware reale acceso, senza movimenti |
+| `test_max_steps` | `pio test -e espA -f unit_hw/motor/test_max_steps` | Moves only the motor to the safe maximum extension starting from logical position 0 |
+| `test_speed` | `pio test -e espA -f unit_hw/motor/test_speed` | Moves only the motor through 6 alternating 40 mm moves, increasing speed and acceleration up to 2300 |
+| `test_screw_lead_20mm` | `pio test -e espA -f integration/test_screw_lead_20mm` | Runs TOF homing, moves the motor by 20 mm, and compares the internal TOF delta |
+| `test_motor_direction` | `pio test -e espA -f integration/test_motor_direction` | Moves only the motor forward/backward and verifies the logical direction; by default it does not use TOF |
+| `test_tof_reading` | `pio test -e espA -f integration/test_tof_reading` | Initializes only the TOF sensor and checks valid readings for about 30 s |
+| `test_homing_only` | `pio test -e espA -f integration/test_homing_only` | Runs only TOF-based homing |
+| `test_homing_move_to_max` | `pio test -e espA -f integration/test_homing_move_to_max` | Runs TOF homing and then moves to the safe maximum extension |
+| `test_tof_motor_accuracy` | `pio test -e espA -f integration/test_tof_motor_accuracy` | Compares TOF distance and motor position after homing |
+| `test_parser` | `pio test -e espB -f unit_hw/espb_bridge/test_parser` | Verifies GUI/Serial command parsing into ESPA packets without ESPA powered on |
+| `test_status_format` | `pio test -e espB -f unit_hw/espb_bridge/test_status_format` | Verifies ESPB cached state and the five-field `STATUS` format |
+| `test_protocol_contract` | `pio test -e espB -f unit_hw/espb_bridge/test_protocol_contract` | Locks the command/ACK consistency contract between GUI, ESPB, and ESPA |
+| `test_espnow_bridge` | `pio test -e espB -f integration/test_espnow_bridge` | Verifies real ESP-NOW with the real ESPA firmware powered on, without movement |
 
-I test `test_max_steps`, `test_speed` e `test_motor_direction` sono quelli utili per muovere solo il motore senza fare homing TOF. Prima di lanciarli, assicurarsi che il pistone sia lontano dai fine corsa meccanici e che possa muoversi in entrambe le direzioni.
+The `test_max_steps`, `test_speed`, and `test_motor_direction` tests are useful when you need to move only the motor without TOF homing. Before running them, make sure the piston is away from the mechanical end stops and can move in both directions.
 
-### Controllo manuale del solo motore
+### Manual Motor-Only Control
 
-Per caricare il firmware da banco che permette di muovere il motore dalla tastiera seriale:
+To upload the bench firmware that lets you move the motor from the serial keyboard:
 
 ```bash
 pio run -e espA_manual_keyboard -t upload
 pio device monitor -e espA_manual_keyboard
 ```
 
-Comandi nel monitor seriale:
+Commands in the serial monitor:
 
-| Tasto | Azione |
+| Key | Action |
 |:------|:-------|
-| Freccia su oppure `w` | Tieni premuto per muovere verso home/up |
-| Freccia giu oppure `s` | Tieni premuto per muovere verso extension/down |
-| Spazio oppure `x` | Stop immediato e disabilita uscite motore |
-| `p` | Stampa posizione corrente |
-| `t` | Stampa una lettura TOF |
-| `h` oppure `?` | Stampa help |
+| Up arrow or `w` | Hold to move toward home/up |
+| Down arrow or `s` | Hold to move toward extension/down |
+| Space or `x` | Stop immediately and disable motor outputs |
+| `p` | Print the current position |
+| `t` | Print one TOF reading |
+| `h` or `?` | Print help |
 
-Questo firmware non esegue homing: all'avvio assegna una posizione logica centrale e muove mentre riceve ripetizioni del tasto premuto; quando rilasci il tasto si ferma automaticamente dopo un breve timeout. Durante il movimento stampa periodicamente posizione motore e distanza TOF. Usarlo solo con il meccanismo in una posizione fisicamente sicura.
+This firmware does not run homing: at startup it assigns a centered logical position and moves while it receives repeated keypresses; when the key is released it stops automatically after a short timeout. During movement it periodically prints motor position and TOF distance. Use it only when the mechanism is in a physically safe position.
 
 ### Test Layout
 
