@@ -101,13 +101,13 @@ void printTofReading(const char* prefix) {
     }
 
     Serial.printf(
-        "%s TOF: valid=%u raw=%.1f mm corrected=%.1f mm signal=%u sigma=%u pos=%ld step (%.1f mm)\n",
+        "%s TOF: valid=%u raw=%.1f mm corrected=%.1f mm zones=%u status=%u pos=%ld step (%.1f mm)\n",
         prefix,
         measurement.valid ? 1 : 0,
         measurement.rawDistanceMm,
         measurement.distanceMm,
-        measurement.signalRateKcps,
-        measurement.sigmaMm,
+        measurement.validZoneCount,
+        measurement.rangeStatus,
         motor.position(),
         static_cast<float>(motor.position()) / MOTOR_STEPS_PER_MM
     );

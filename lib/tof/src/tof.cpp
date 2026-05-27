@@ -2,30 +2,31 @@
 
 #include "config.h"
 
-TofSensor::TofSensor(TwoWire& wire, uint8_t xshutPin, uint8_t gpio1Pin)
+TofSensor::TofSensor(TwoWire& wire, uint8_t lpnPin, uint8_t gpio1Pin)
     : _wire(wire),
-      _xshutPin(xshutPin),
-      _sensor(&_wire, _xshutPin) {
+      _lpnPin(lpnPin),
+      _sensor(&_wire, _lpnPin) {
     (void)gpio1Pin;
 }
 
 bool TofSensor::begin() {
-    if (_sensor.begin() != VL53L4CD_ERROR_NONE) {
+    _sensor.begin();
+
+    if (_sensor.init_sensor() != 0) {
         return false;
     }
 
     _wire.setClock(1000000);
 
-    if (_sensor.InitSensor() != VL53L4CD_ERROR_NONE) {
+    if (_sensor.vl53l7cx_set_resolution(VL53L7CX_RESOLUTION_4X4) != VL53L7CX_STATUS_OK) {
         return false;
     }
 
-    if (_sensor.VL53L4CD_SetRangeTiming(RANGE_TIMING_BUDGET_MS,
-                                        RANGE_INTER_MEASUREMENT_MS) != VL53L4CD_ERROR_NONE) {
+    if (_sensor.vl53l7cx_set_ranging_frequency_hz(RANGING_FREQUENCY_HZ) != VL53L7CX_STATUS_OK) {
         return false;
     }
 
-    if (_sensor.VL53L4CD_StartRanging() != VL53L4CD_ERROR_NONE) {
+    if (_sensor.vl53l7cx_start_ranging() != VL53L7CX_STATUS_OK) {
         return false;
     }
 
@@ -39,32 +40,51 @@ bool TofSensor::readMeasurement(TofMeasurement& measurement) {
     }
 
     uint8_t ready = 0;
-    if (_sensor.VL53L4CD_CheckForDataReady(&ready) != VL53L4CD_ERROR_NONE || ready == 0) {
+    if (_sensor.vl53l7cx_check_data_ready(&ready) != VL53L7CX_STATUS_OK || ready == 0) {
         return false;
     }
 
-    if (_sensor.VL53L4CD_ClearInterrupt() != VL53L4CD_ERROR_NONE) {
+    VL53L7CX_ResultsData results;
+    if (_sensor.vl53l7cx_get_ranging_data(&results) != VL53L7CX_STATUS_OK) {
         return false;
     }
 
-    VL53L4CD_Result_t result;
-    if (_sensor.VL53L4CD_GetResult(&result) != VL53L4CD_ERROR_NONE) {
-        return false;
+    int32_t bestRawMm = INT32_MAX;
+    uint8_t bestStatus = 255;
+    uint8_t validCount = 0;
+
+    for (uint8_t i = 0; i < RESOLUTION_ZONES; ++i) {
+        const uint8_t status = results.target_status[i];
+        const int16_t dist = results.distance_mm[i];
+
+        if (!_isValidZoneStatus(status) || dist <= 0) {
+            continue;
+        }
+
+        ++validCount;
+        if (dist < bestRawMm) {
+            bestRawMm = dist;
+            bestStatus = status;
+        }
     }
 
-    measurement.rawDistanceMm = static_cast<float>(result.distance_mm);
+    measurement.validZoneCount = validCount;
+
+    if (validCount == 0) {
+        measurement.rawDistanceMm = 0.0f;
+        measurement.distanceMm = 0.0f;
+        measurement.rangeStatus = bestStatus;
+        measurement.valid = false;
+        return true;
+    }
+
+    measurement.rawDistanceMm = static_cast<float>(bestRawMm);
     measurement.distanceMm = measurement.rawDistanceMm - TOF_DISTANCE_OFFSET_MM;
     if (measurement.distanceMm < 0.0f) {
         measurement.distanceMm = 0.0f;
     }
-    measurement.rangeStatus = result.range_status;
-    measurement.ambientRateKcps = result.ambient_rate_kcps;
-    measurement.ambientPerSpadKcps = result.ambient_per_spad_kcps;
-    measurement.signalRateKcps = result.signal_rate_kcps;
-    measurement.signalPerSpadKcps = result.signal_per_spad_kcps;
-    measurement.numberOfSpad = result.number_of_spad;
-    measurement.sigmaMm = result.sigma_mm;
-    measurement.valid = _isValidResult(result);
+    measurement.rangeStatus = bestStatus;
+    measurement.valid = true;
     return true;
 }
 
@@ -78,6 +98,8 @@ bool TofSensor::readDistanceMm(float& distanceMm) {
     return true;
 }
 
-bool TofSensor::_isValidResult(const VL53L4CD_Result_t& result) const {
-    return result.range_status == 0 && result.distance_mm > 0;
+bool TofSensor::_isValidZoneStatus(uint8_t status) const {
+    // Per ST guidance: status 5 is the nominal "range valid" code; 9 is
+    // "range valid with large pulse" — both are acceptable for our use.
+    return status == 5 || status == 9;
 }

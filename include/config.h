@@ -50,9 +50,9 @@ constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops
 constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
 constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during homing (ms)
 
-// TOF (Time-of-Flight) sensor - VL53L4CD
-constexpr uint8_t  TOF_XSHUT_PIN         = 16;    // Sensor shutdown pin
-constexpr uint8_t  TOF_GPIO1_PIN         = 15;    // Optional interrupt pin, unused in polling mode
+// TOF (Time-of-Flight) sensor - VL53L7CX
+constexpr uint8_t  TOF_XSHUT_PIN         = 16;    // LPn (sensor enable) pin
+constexpr uint8_t  TOF_GPIO1_PIN         = 15;    // Optional INT pin, unused in polling mode
 constexpr float    TOF_DISTANCE_OFFSET_MM = 24.0f; // Measured raw offset: raw distance - real distance
 constexpr float    TOF_HOMING_THRESHOLD  = 40.0f; // Distance threshold for homing (mm)
 constexpr float    TOF_MAX_STOP_MARGIN_MM = 2.0f; // Extra margin beyond homing distance + syringe travel

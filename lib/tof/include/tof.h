@@ -2,31 +2,32 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <vl53l4cd_class.h>
+#include <vl53l7cx_class.h>
 
 /*
  *******************************************************************************
  * tof.h
- * VL53L4CD Time-of-Flight sensor controller.
+ * VL53L7CX multi-zone Time-of-Flight sensor controller.
+ *
+ * The VL53L7CX is an 8x8 / 4x4 multi-zone ranging sensor. For homing and
+ * endstop detection we configure it in 4x4 mode and aggregate the 16 zones
+ * into a single distance by taking the minimum valid range. This favours
+ * detecting the nearest obstacle, which is the correct behaviour for the
+ * syringe carriage approach.
  *******************************************************************************
  */
 
 struct TofMeasurement {
-    float distanceMm = 0.0f;
-    float rawDistanceMm = 0.0f;
-    uint8_t rangeStatus = 0;
-    uint16_t ambientRateKcps = 0;
-    uint16_t ambientPerSpadKcps = 0;
-    uint16_t signalRateKcps = 0;
-    uint16_t signalPerSpadKcps = 0;
-    uint16_t numberOfSpad = 0;
-    uint16_t sigmaMm = 0;
+    float distanceMm = 0.0f;       // Aggregated distance with offset applied
+    float rawDistanceMm = 0.0f;    // Aggregated raw distance (min of valid zones)
+    uint8_t rangeStatus = 0;       // Status of the selected (nearest) zone
+    uint8_t validZoneCount = 0;    // Number of zones reporting a valid range
     bool valid = false;
 };
 
 class TofSensor {
 public:
-    TofSensor(TwoWire& wire, uint8_t xshutPin, uint8_t gpio1Pin);
+    TofSensor(TwoWire& wire, uint8_t lpnPin, uint8_t gpio1Pin);
 
     bool begin();
     bool readMeasurement(TofMeasurement& measurement);
@@ -35,13 +36,13 @@ public:
     bool isInitialized() const { return _initialized; }
 
 private:
-    static constexpr uint32_t RANGE_TIMING_BUDGET_MS = 30;
-    static constexpr uint32_t RANGE_INTER_MEASUREMENT_MS = 0;
+    static constexpr uint8_t  RANGING_FREQUENCY_HZ = 15;   // 4x4 supports up to 60Hz; 15Hz is plenty for homing
+    static constexpr uint8_t  RESOLUTION_ZONES    = 16;    // 4x4
 
-    bool _isValidResult(const VL53L4CD_Result_t& result) const;
+    bool _isValidZoneStatus(uint8_t status) const;
 
     TwoWire& _wire;
-    uint8_t _xshutPin;
-    VL53L4CD _sensor;
+    uint8_t _lpnPin;
+    VL53L7CX _sensor;
     bool _initialized = false;
 };

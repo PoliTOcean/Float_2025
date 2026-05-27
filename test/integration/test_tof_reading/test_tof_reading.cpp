@@ -2,7 +2,7 @@
  *******************************************************************************
  * TOF reading integration test
  *
- * This test verifies that the VL53L4CD TOF sensor can initialize and provide
+ * This test verifies that the VL53L7CX TOF sensor can initialize and provide
  * distance samples for about 30 seconds without moving the motor.
  *
  * Procedure:
