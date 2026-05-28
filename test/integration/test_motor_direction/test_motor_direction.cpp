@@ -46,11 +46,14 @@ MotorController motor;
 #include <Wire.h>
 #include "led.h"
 #include "motion_control.h"
+#include "sensors.h"
 #include "tof.h"
 
+bool debug_mode_active = false;
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
+SensorManager sensors;
 #endif
 
 constexpr float TEST_START_TRAVEL_MM = 10.0f;

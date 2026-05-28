@@ -26,11 +26,14 @@
 #include "motor.h"
 #include "tof.h"
 #include "motion_control.h"
+#include "sensors.h"
 
+bool debug_mode_active = false;
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
 TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
+SensorManager sensors;
 
 void setUp() {}
 

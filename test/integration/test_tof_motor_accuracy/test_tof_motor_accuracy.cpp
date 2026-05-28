@@ -30,12 +30,15 @@
 #include "led.h"
 #include "motor.h"
 #include "motion_control.h"
+#include "sensors.h"
 #include "tof.h"
 
+bool debug_mode_active = false;
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
 TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
+SensorManager sensors;
 
 constexpr float TOF_HOME_TOLERANCE_MM = 5.0f;
 constexpr float TOF_DISTANCE_TOLERANCE_MM = 5.0f;

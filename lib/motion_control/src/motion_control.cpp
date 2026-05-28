@@ -54,18 +54,24 @@ bool MotionController::motionAllowed() {
 
 bool MotionController::waitForMotor(uint32_t timeoutMs) {
     const unsigned long startMs = millis();
+    unsigned long lastTofSampleMs = 0;
 
     while (_motor.distanceToGo() != 0) {
         if (remoteStopRequested()) {
             return false;
         }
 
+        const unsigned long nowMs = millis();
         if (timeoutMs > 0 && millis() - startMs > timeoutMs) {
             emergencyStop("movement timeout");
             return false;
         }
 
         _motor.run();
+        if (tofMaxExtensionStopReached(nowMs, lastTofSampleMs, "movement")) {
+            return false;
+        }
+
         ledController.update();
         yield();
     }
@@ -76,6 +82,35 @@ bool MotionController::waitForMotor(uint32_t timeoutMs) {
 float MotionController::readPressureKpa() {
     sensors.read();
     return sensors.pressure() / 1000.0f;
+}
+
+bool MotionController::tofMaxExtensionStopReached(unsigned long nowMs,
+                                                  unsigned long& lastTofSampleMs,
+                                                  const char* context) {
+    if (!_tof.isInitialized() || TOF_MAX_STOP_DISTANCE_MM <= 0.0f) {
+        return false;
+    }
+
+    if (_motor.distanceToGo() <= 0) {
+        return false;
+    }
+
+    if (nowMs - lastTofSampleMs < MOTOR_HOMING_TOF_PERIOD_MS) {
+        return false;
+    }
+    lastTofSampleMs = nowMs;
+
+    float distanceMm = 0.0f;
+    if (!_tof.readDistanceMm(distanceMm) || distanceMm < TOF_MAX_STOP_DISTANCE_MM) {
+        return false;
+    }
+
+    Debug.printf("%s: TOF max extension stop reached (%.1f >= %.1f mm)\n",
+                 context,
+                 distanceMm,
+                 TOF_MAX_STOP_DISTANCE_MM);
+    emergencyStop("TOF max extension limit");
+    return true;
 }
 
 bool MotionController::pressureStopReached(float stopPressureKpa, uint8_t* pressureStopSamples) {
@@ -212,7 +247,9 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
     return true;
 }
 
-bool MotionController::moveToWithTimeout(long targetPosition, uint32_t timeoutMs) {
+bool MotionController::moveToWithTimeout(long targetPosition,
+                                         uint32_t timeoutMs,
+                                         bool keepOutputsEnabled) {
     if (!motionAllowed()) {
         return false;
     }
@@ -226,7 +263,7 @@ bool MotionController::moveToWithTimeout(long targetPosition, uint32_t timeoutMs
     _motor.startMoveTo(targetPosition);
 
     const bool success = waitForMotor(timeoutMs);
-    if (success) {
+    if (success && !keepOutputsEnabled) {
         _motor.disableOutputs();
     }
 
@@ -251,9 +288,6 @@ bool MotionController::moveToMax(uint32_t timeoutMs,
     }
 
     const long targetPosition = static_cast<long>(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
-    const float tofStopDistanceMm = TOF_MAX_STOP_DISTANCE_MM;
-    const bool tofStopEnabled = tofStopDistanceMm > 0.0f && _tof.isInitialized();
-
     _motor.enableOutputs();
     _motor.startMoveTo(targetPosition);
 
@@ -284,17 +318,8 @@ bool MotionController::moveToMax(uint32_t timeoutMs,
 
         _motor.run();
 
-        if (tofStopEnabled && nowMs - lastTofSampleMs >= MOTOR_HOMING_TOF_PERIOD_MS) {
-            lastTofSampleMs = nowMs;
-
-            float distanceMm = 0.0f;
-            if (_tof.readDistanceMm(distanceMm) && distanceMm >= tofStopDistanceMm) {
-                Debug.printf("moveToMax: TOF stop reached (%.1f >= %.1f mm)\n",
-                             distanceMm,
-                             tofStopDistanceMm);
-                _motor.stop();
-                break;
-            }
+        if (tofMaxExtensionStopReached(nowMs, lastTofSampleMs, "moveToMax")) {
+            return false;
         }
 
         ledController.update();

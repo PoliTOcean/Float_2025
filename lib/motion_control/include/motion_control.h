@@ -18,7 +18,7 @@ public:
     bool homeWithTof(float stopPressureKpa = 0.0f, bool* pressureStop = nullptr, uint8_t* pressureStopSamples = nullptr);
     bool waitForMotor(uint32_t timeoutMs);
     bool moveToMax(uint32_t timeoutMs = 0, float stopPressureKpa = 0.0f, bool* pressureStop = nullptr, uint8_t* pressureStopSamples = nullptr);
-    bool moveToWithTimeout(long targetPosition, uint32_t timeoutMs);
+    bool moveToWithTimeout(long targetPosition, uint32_t timeoutMs, bool keepOutputsEnabled = false);
     bool manualStepTest(long steps, uint32_t speed);
     bool balance(uint32_t holdMs);
 
@@ -35,6 +35,9 @@ private:
     bool _emergencyStop = false;
 
     float readPressureKpa();
+    bool tofMaxExtensionStopReached(unsigned long nowMs,
+                                    unsigned long& lastTofSampleMs,
+                                    const char* context);
     bool pressureStopReached(float stopPressureKpa, uint8_t* pressureStopSamples = nullptr);
     bool waitWithPressureStop(uint32_t waitMs, float stopPressureKpa, uint8_t* pressureStopSamples = nullptr);
 };

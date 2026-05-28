@@ -54,6 +54,10 @@ bool TofSensor::readMeasurement(TofMeasurement& measurement) {
     uint8_t validCount = 0;
 
     for (uint8_t i = 0; i < RESOLUTION_ZONES; ++i) {
+        if ((TOF_ZONE_ENABLE_MASK & (static_cast<uint16_t>(1U) << i)) == 0) {
+            continue;
+        }
+
         const uint8_t status = results.target_status[i];
         const int16_t dist = results.distance_mm[i];
 
@@ -79,7 +83,7 @@ bool TofSensor::readMeasurement(TofMeasurement& measurement) {
     }
 
     measurement.rawDistanceMm = static_cast<float>(bestRawMm);
-    measurement.distanceMm = measurement.rawDistanceMm - TOF_DISTANCE_OFFSET_MM;
+    measurement.distanceMm = measurement.rawDistanceMm - TOF_DISTANCE_RAW_OFFSET_MM;
     if (measurement.distanceMm < 0.0f) {
         measurement.distanceMm = 0.0f;
     }

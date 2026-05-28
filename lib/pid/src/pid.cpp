@@ -17,6 +17,7 @@ void PIDController::reset() {
     _lastDepth  = 0.0f;
     _lastError  = 0.0f;
     _lastTimeMs = millis();
+    _hasLastDepth = false;
 }
 
 float PIDController::compute(float targetDepth, float currentDepth) {
@@ -35,7 +36,7 @@ float PIDController::compute(float targetDepth, float currentDepth) {
     const float integral = Ki * _integral;
 
     // --- Derivative on measurement (avoids setpoint-change kick) ---
-    const float depthRate  = (_lastDepth - currentDepth) / dt;
+    const float depthRate  = _hasLastDepth ? (_lastDepth - currentDepth) / dt : 0.0f;
     const float derivative = Kd * depthRate;
 
     float output = proportional + integral + derivative;
@@ -45,6 +46,7 @@ float PIDController::compute(float targetDepth, float currentDepth) {
     _lastError  = error;
     _lastDepth  = currentDepth;
     _lastTimeMs = now;
+    _hasLastDepth = true;
 
     Debug.printf("PID: target=%.2f cur=%.2f err=%.2f P=%.2f I=%.2f D=%.2f out=%.2f\n",
                  targetDepth, currentDepth, error,

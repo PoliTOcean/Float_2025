@@ -40,12 +40,12 @@ constexpr float MOTOR_REVS_PER_MM =
 constexpr float MOTOR_STEPS_PER_MM =
     MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP * MOTOR_REVS_PER_MM;
 
-constexpr float    MOTOR_TRAVEL_MM       = 40.0f; // Total syringe travel (mm)
+constexpr float    MOTOR_TRAVEL_MM       = 35.0f; // Normal commanded syringe travel (mm)
 constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
 																 MOTOR_STEPS_PER_MM + 0.5f);
-constexpr uint32_t MOTOR_MAX_SPEED       = 1500;  // Normal operating speed (steps/s); tested stable up to 2140 steps/s
-constexpr uint32_t MOTOR_MAX_ACCELERATION = 1500;   // Normal acceleration/deceleration (steps/s^2); tested stable up to 2140 steps/s^2
-constexpr uint32_t MOTOR_HOMING_SPEED    = 1500;   // Homing speed (steps/s)
+constexpr uint32_t MOTOR_MAX_SPEED       = 1800;  // Normal operating speed (steps/s)
+constexpr uint32_t MOTOR_MAX_ACCELERATION = 1800; // Normal acceleration/deceleration (steps/s^2)
+constexpr uint32_t MOTOR_HOMING_SPEED    = 1800;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
 constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
 constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during homing (ms)
@@ -53,11 +53,16 @@ constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during
 // TOF (Time-of-Flight) sensor - VL53L7CX
 constexpr uint8_t  TOF_XSHUT_PIN         = 16;    // LPn (sensor enable) pin
 constexpr uint8_t  TOF_GPIO1_PIN         = 15;    // Optional INT pin, unused in polling mode
-constexpr float    TOF_DISTANCE_OFFSET_MM = 24.0f; // Measured raw offset: raw distance - real distance
+// VL53L7CX 4x4 zone mask: bit 0..15 maps directly to driver zone index
+// results.distance_mm[i] / results.target_status[i]. 1 = enabled, 0 = ignored.
+constexpr uint8_t  TOF_MATRIX_ZONE_COUNT = 16;
+constexpr uint16_t TOF_ZONE_ENABLE_MASK  = 0x0660; // Central zones: 5, 6, 9, 10
+constexpr float    TOF_DISTANCE_RAW_OFFSET_MM = 6.0f; // Raw distance is this much higher than real distance
 constexpr float    TOF_HOMING_THRESHOLD  = 40.0f; // Distance threshold for homing (mm)
+constexpr float    TOF_MAX_STOP_TRAVEL_MM = 40.0f; // Physical safety travel checked by TOF (mm)
 constexpr float    TOF_MAX_STOP_MARGIN_MM = 2.0f; // Extra margin beyond homing distance + syringe travel
 constexpr float    TOF_MAX_STOP_DISTANCE_MM =
-    TOF_HOMING_THRESHOLD + MOTOR_TRAVEL_MM + TOF_MAX_STOP_MARGIN_MM;
+    TOF_HOMING_THRESHOLD + TOF_MAX_STOP_TRAVEL_MM + TOF_MAX_STOP_MARGIN_MM;
 
 // ---------------------------------------------------------------------------
 // BALANCE / PURGE CONTROL
@@ -87,10 +92,11 @@ constexpr uint16_t DATA_PACKET_PERIOD_MS = 5000; // Packet cadence shown to judg
 // ---------------------------------------------------------------------------
 // These are mutable at runtime via command 8 (UPDATE_PID), so they live in
 // pid.cpp as extern variables — only defaults are declared here.
-constexpr float PID_KP_DEFAULT        = 10.0f;
+constexpr float PID_KP_DEFAULT        = 2500.0f;
 constexpr float PID_KI_DEFAULT        = 0.0f;
 constexpr float PID_KD_DEFAULT        = 350.0f;
-constexpr float PID_OUTPUT_LIMIT      = 80.0f;   // Max output magnitude (steps)
+constexpr float PID_OUTPUT_LIMIT      = 12000.0f;  // Max output magnitude (steps)
+constexpr uint16_t PID_MIN_MOVE_STEPS = 2000;      // Minimum useful PID correction (steps)
 constexpr float PID_INTEGRAL_LIMIT    = 5.0f;    // Anti-windup clamp
 
 // ---------------------------------------------------------------------------

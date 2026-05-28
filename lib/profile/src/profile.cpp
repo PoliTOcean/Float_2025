@@ -219,8 +219,12 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
 
         // ---- PID phase ----
         const float pidOutput = pidController.compute(targetDepth, currentDepth);
-        if (fabsf(pidOutput) > 1.0f) {
-            motionController.moveToWithTimeout(motor.position() + static_cast<long>(pidOutput), 0);
+        long pidSteps = static_cast<long>(pidOutput);
+        if (pidSteps != 0 && fabsf(targetDepth - currentDepth) > DEPTH_EPSILON) {
+            if (labs(pidSteps) < PID_MIN_MOVE_STEPS) {
+                pidSteps = (pidSteps > 0) ? PID_MIN_MOVE_STEPS : -PID_MIN_MOVE_STEPS;
+            }
+            motionController.moveToWithTimeout(motor.position() + pidSteps, 0, true);
         }
 
         // --- EEPROM write tick (also checks hold condition for PID phase) ---

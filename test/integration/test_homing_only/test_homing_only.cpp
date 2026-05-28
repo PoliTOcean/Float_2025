@@ -25,12 +25,15 @@
 #include "led.h"
 #include "motor.h"
 #include "motion_control.h"
+#include "sensors.h"
 #include "tof.h"
 
+bool debug_mode_active = false;
 LEDController ledController(PIN_LED_R, PIN_LED_G, PIN_LED_B);
 MotorController motor;
 TofSensor tofSensor(Wire, TOF_XSHUT_PIN, TOF_GPIO1_PIN);
 MotionController motionController(motor, tofSensor);
+SensorManager sensors;
 
 constexpr uint32_t TOF_HOME_SAMPLE_TIMEOUT_MS = 1500;
 constexpr uint16_t TOF_HOME_SAMPLE_PERIOD_MS = 40;

@@ -101,7 +101,7 @@ void printTofReading(const char* prefix) {
     }
 
     Serial.printf(
-        "%s TOF: valid=%u raw=%.1f mm corrected=%.1f mm zones=%u status=%u pos=%ld step (%.1f mm)\n",
+        "%s TOF: valid=%u raw=%.1f mm distance=%.1f mm zones=%u status=%u pos=%ld step (%.1f mm)\n",
         prefix,
         measurement.valid ? 1 : 0,
         measurement.rawDistanceMm,
@@ -111,6 +111,17 @@ void printTofReading(const char* prefix) {
         motor.position(),
         static_cast<float>(motor.position()) / MOTOR_STEPS_PER_MM
     );
+
+    if (outputsEnabledForMove &&
+        activeDirection > 0 &&
+        TOF_MAX_STOP_DISTANCE_MM > 0.0f &&
+        measurement.valid &&
+        measurement.distanceMm >= TOF_MAX_STOP_DISTANCE_MM) {
+        Serial.printf("TOF max extension stop reached: %.1f >= %.1f mm\n",
+                      measurement.distanceMm,
+                      TOF_MAX_STOP_DISTANCE_MM);
+        stopMotorNow();
+    }
 }
 
 void handleCommand(char command) {

@@ -32,6 +32,7 @@ private:
     float         _lastDepth  = 0.0f;
     float         _lastError  = 0.0f;
     unsigned long _lastTimeMs = 0;
+    bool          _hasLastDepth = false;
 };
 
 // Singleton — defined in pid.cpp
