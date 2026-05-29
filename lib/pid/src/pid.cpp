@@ -5,52 +5,64 @@
 /*
  *******************************************************************************
  * pid.cpp
+ * Implementazione PID con output normalizzato [0, 1].
  *******************************************************************************
  */
 
 
 PIDController::PIDController(float kp, float ki, float kd)
-    : Kp(kp), Ki(ki), Kd(kd) {}
+    : Kp(kp), Ki(ki), Kd(kd),
+      alphaD(PID_ALPHA_D_DEFAULT),
+      periodMs(PID_PERIOD_DEFAULT_MS),
+      uNeutral(PID_U_NEUTRAL) {}
 
 void PIDController::reset() {
-    _integral   = 0.0f;
-    _lastDepth  = 0.0f;
-    _lastError  = 0.0f;
-    _lastTimeMs = millis();
+    _integral     = 0.0f;
+    _dFilt        = 0.0f;
+    _lastDepth    = 0.0f;
+    _lastTimeMs   = millis();
     _hasLastDepth = false;
 }
 
-float PIDController::compute(float targetDepth, float currentDepth) {
-    unsigned long now = millis();
+float PIDController::computeNormalized(float targetDepth, float currentDepth) {
+    const unsigned long now = millis();
     float dt = (now - _lastTimeMs) / 1000.0f;
-    if (dt <= 0.0f) dt = PERIOD_MEASUREMENT / 1000.0f;
+    // Clamp robusto a primo tick / glitch (millis() rollover o reset)
+    if (dt <= 0.0f || dt > 1.0f) dt = periodMs / 1000.0f;
 
     const float error = targetDepth - currentDepth;
 
     // --- Proportional ---
-    const float proportional = Kp * error;
+    const float P = Kp * error;
 
-    // --- Integral with anti-windup ---
-    _integral += error * dt;
-    _integral = constrain(_integral, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT);
-    const float integral = Ki * _integral;
+    // --- Derivative on measurement, LPF IIR ---
+    const float dRaw = _hasLastDepth ? (currentDepth - _lastDepth) / dt : 0.0f;
+    _dFilt = alphaD * dRaw + (1.0f - alphaD) * _dFilt;
+    // d(error)/dt = -dDepth/dt (target costante a regime)
+    const float D = -Kd * _dFilt;
 
-    // --- Derivative on measurement (avoids setpoint-change kick) ---
-    const float depthRate  = _hasLastDepth ? (_lastDepth - currentDepth) / dt : 0.0f;
-    const float derivative = Kd * depthRate;
+    // --- Integral (preview con vecchio accumulo, decisione di aggiornamento sotto) ---
+    const float I = Ki * _integral;
 
-    float output = proportional + integral + derivative;
-    output = constrain(output, -PID_OUTPUT_LIMIT, PID_OUTPUT_LIMIT);
+    const float uRaw = uNeutral + P + I + D;
+    const float uSat = constrain(uRaw, 0.0f, 1.0f);
 
-    // Update state for next iteration
-    _lastError  = error;
-    _lastDepth  = currentDepth;
-    _lastTimeMs = now;
+    // Conditional integration: aggiorna solo se non saturati nel verso dell'errore
+    const bool satHigh = (uRaw > 1.0f);
+    const bool satLow  = (uRaw < 0.0f);
+    if (!((satHigh && error > 0.0f) || (satLow && error < 0.0f))) {
+        _integral += error * dt;
+        _integral = constrain(_integral, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT);
+    }
+
+    _lastDepth    = currentDepth;
+    _lastTimeMs   = now;
     _hasLastDepth = true;
 
-    Debug.printf("PID: target=%.2f cur=%.2f err=%.2f P=%.2f I=%.2f D=%.2f out=%.2f\n",
+    Debug.printf("PID: tgt=%.2f cur=%.2f e=%.3f P=%.3f I=%.3f D=%.3f u=%.3f%s\n",
                  targetDepth, currentDepth, error,
-                 proportional, integral, derivative, output);
+                 P, I, D, uSat,
+                 (satHigh || satLow) ? " SAT" : "");
 
-    return output;
+    return uSat;
 }

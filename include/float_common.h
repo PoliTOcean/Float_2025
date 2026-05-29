@@ -25,6 +25,10 @@ enum FloatCommand : uint8_t {
   CMD_DEBUG_MODE   = 11,
   CMD_HOME         = 12,
   CMD_STOP         = 13,
+  CMD_UPDATE_PID_EXT = 14,
+  CMD_SYRINGE_SET  = 15,
+  CMD_PID_HOLD     = 16,
+  CMD_PID_STEP     = 17,
 };
 
 // List of messages for the ESPA acknowledgements: CS has to be aware of these 
@@ -41,6 +45,10 @@ enum FloatCommand : uint8_t {
 #define CMD11_ACK       "DEBUG_MODE_RECVD"
 #define CMD12_ACK       "HOME_RECVD"
 #define CMD13_ACK       "STOP_RECVD"
+#define CMD14_ACK       "CHNG_PID_EXT_RECVD"
+#define CMD15_ACK       "SYRINGE_SET_RECVD"
+#define CMD16_ACK       "PID_HOLD_RECVD"
+#define CMD17_ACK       "PID_STEP_RECVD"
 
 // Sensor data structure
 typedef struct sensor_data {

@@ -114,7 +114,8 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         pidController.reset();
         if (isDeepTarget) {
             // Pre-position syringe to kick-start the deep descent only.
-            motionController.moveToWithTimeout(500, 0);
+            // u=0.979 → siringa quasi piena (logica invertita) → kick-start "affonda".
+            motionController.moveToWithTimeout(uToMotorPos(0.979f), 0);
         }
     } else {
         ledController.setState(LEDState::PROFILE);
@@ -127,6 +128,10 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     bool          motorCommanded = false; // For simple (non-PID) phases
     float         lastDepth      = 0.0f;
     int           stableCount    = 0;
+    // Per la fase PID: ultimo target assoluto comandato al motore (in step).
+    // Inizializzato al pre-position (u=0.979) per isDeepTarget, altrimenti alla
+    // posizione corrente — letta dopo il primo sensors.read() qui sotto.
+    long          lastCommandedTarget = isDeepTarget ? uToMotorPos(0.979f) : motor.position();
 
     // -----------------------------------------------------------------------
     while (true) {
@@ -145,7 +150,11 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         }
 
         // --- Measurement tick ---
-        if (millis() - lastMeasMs < PERIOD_MEASUREMENT) continue;
+        // Fase PID gira al ritmo configurabile pidController.periodMs (default 50 ms,
+        // modificabile via CMD_UPDATE_PID_EXT). Fasi simple restano a PERIOD_MEASUREMENT.
+        const uint16_t measPeriodMs =
+            isPIDPhase ? pidController.periodMs : PERIOD_MEASUREMENT;
+        if (millis() - lastMeasMs < measPeriodMs) continue;
         lastMeasMs = millis();
 
         sensors.read();
@@ -179,9 +188,11 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         if (!isPIDPhase) {
             if (!motorCommanded) {
                 if (isBottomTarget) {
-                    motionController.moveToMax();
+                    // Bottom: u=1 logico → siringa piena → affonda
+                    motionController.moveToWithTimeout(uToMotorPos(1.0f), 0);
                 } else {
-                    motionController.moveToWithTimeout(MOTOR_ENDSTOP_MARGIN, 0); // Surface
+                    // Surface: u=0 logico → siringa vuota → galleggia
+                    motionController.moveToWithTimeout(uToMotorPos(0.0f), 0);
                 }
                 motorCommanded = true;
             }
@@ -218,13 +229,19 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         }
 
         // ---- PID phase ----
-        const float pidOutput = pidController.compute(targetDepth, currentDepth);
-        long pidSteps = static_cast<long>(pidOutput);
-        if (pidSteps != 0 && fabsf(targetDepth - currentDepth) > DEPTH_EPSILON) {
-            if (labs(pidSteps) < PID_MIN_MOVE_STEPS) {
-                pidSteps = (pidSteps > 0) ? PID_MIN_MOVE_STEPS : -PID_MIN_MOVE_STEPS;
-            }
-            motionController.moveToWithTimeout(motor.position() + pidSteps, 0, true);
+        // Output PID = posizione assoluta della siringa, frazione di corsa in [0, 1].
+        // Comando motore NON bloccante: startMoveTo aggiorna il target di FastAccelStepper
+        // al volo, anche se il motore sta ancora viaggiando dal tick precedente.
+        const float u = pidController.computeNormalized(targetDepth, currentDepth);
+        const long usableSteps =
+            (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
+        const long posTarget = uToMotorPos(u);
+        const long deadbandSteps =
+            (long)(PID_MIN_RETARGET_FRAC * (float)usableSteps);
+        if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
+            motor.enableOutputs();
+            motor.startMoveTo(posTarget);
+            lastCommandedTarget = posTarget;
         }
 
         // --- EEPROM write tick (also checks hold condition for PID phase) ---
