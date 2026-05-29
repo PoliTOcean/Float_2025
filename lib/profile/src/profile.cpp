@@ -8,6 +8,7 @@
 #include "comms.h"
 #include "flash_storage.h"
 #include <EEPROM.h>
+#include <Preferences.h>
 #include "float_common.h"
 #include "DebugSerial.h"
 
@@ -25,9 +26,141 @@
 ProfileManager::ProfileManager() {}
 
 namespace {
+constexpr uint32_t PROFILE_CONFIG_MAGIC = 0x50464C54UL; // "PFLT"
+constexpr uint16_t PROFILE_CONFIG_VERSION = 1;
+constexpr char PROFILE_CONFIG_NAMESPACE[] = "float_profile";
+constexpr char PROFILE_CONFIG_KEY[] = "cfg";
+
+struct StoredProfileConfig {
+    uint32_t magic;
+    uint16_t version;
+    RuntimeProfileConfig config;
+};
+
 bool sendPacketFromStorage(const char* message, uint32_t timeoutMs) {
     return comms.sendMessage(message, timeoutMs);
 }
+}
+
+// ---------------------------------------------------------------------------
+void ProfileManager::beginConfig() {
+    RuntimeProfileConfig loaded;
+    bool hasValidStoredConfig = false;
+
+    Preferences preferences;
+    if (preferences.begin(PROFILE_CONFIG_NAMESPACE, true)) {
+        if (preferences.getBytesLength(PROFILE_CONFIG_KEY) == sizeof(StoredProfileConfig)) {
+            StoredProfileConfig stored;
+            preferences.getBytes(PROFILE_CONFIG_KEY, &stored, sizeof(stored));
+            if (stored.magic == PROFILE_CONFIG_MAGIC &&
+                stored.version == PROFILE_CONFIG_VERSION &&
+                validateConfig(stored.config)) {
+                loaded = stored.config;
+                hasValidStoredConfig = true;
+            }
+        }
+        preferences.end();
+    }
+
+    _config = loaded;
+    _applyConfigToSubsystems();
+
+    if (!hasValidStoredConfig) {
+        _saveConfig();
+        Debug.println("Profile config: using config.h defaults");
+    } else {
+        Debug.println("Profile config: loaded from NVS");
+    }
+}
+
+// ---------------------------------------------------------------------------
+float ProfileManager::shallowBottomTargetM() const {
+    return _config.shallowTopTargetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
+}
+
+// ---------------------------------------------------------------------------
+bool ProfileManager::setConfig(const RuntimeProfileConfig& config) {
+    if (!validateConfig(config)) {
+        Debug.println("Profile config rejected: invalid values");
+        return false;
+    }
+
+    _config = config;
+    _applyConfigToSubsystems();
+    _saveConfig();
+    Debug.println("Profile config updated");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+bool ProfileManager::validateConfig(const RuntimeProfileConfig& config) const {
+    const float shallowBottomM =
+        config.shallowTopTargetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
+
+    return config.profileCount >= 1 && config.profileCount <= 10 &&
+           isfinite(config.deepTargetM) &&
+           isfinite(config.shallowTopTargetM) &&
+           isfinite(config.depthToleranceM) &&
+           isfinite(config.holdTimeS) &&
+           isfinite(config.pidTimeoutS) &&
+           isfinite(config.ascentTimeoutS) &&
+           isfinite(config.surfaceOffsetM) &&
+           config.deepTargetM >= 0.0f && config.deepTargetM <= 5.0f &&
+           config.shallowTopTargetM >= 0.0f && config.shallowTopTargetM <= 5.0f &&
+           config.depthToleranceM >= 0.005f && config.depthToleranceM <= 1.0f &&
+           config.holdTimeS >= 1.0f && config.holdTimeS <= 600.0f &&
+           config.pidTimeoutS >= 5.0f && config.pidTimeoutS <= 900.0f &&
+           config.ascentTimeoutS >= 5.0f && config.ascentTimeoutS <= 900.0f &&
+           config.surfaceOffsetM >= 0.0f && config.surfaceOffsetM <= 5.0f &&
+           shallowBottomM < config.deepTargetM;
+}
+
+// ---------------------------------------------------------------------------
+void ProfileManager::formatConfigJson(char* buffer, size_t bufferSize) const {
+    if (buffer == nullptr || bufferSize == 0) return;
+
+    snprintf(buffer, bufferSize,
+             "{\"profile_count\":%u,"
+             "\"deep_target_m\":%.3f,"
+             "\"shallow_top_m\":%.3f,"
+             "\"shallow_bottom_m\":%.3f,"
+             "\"depth_tolerance_m\":%.3f,"
+             "\"hold_s\":%.1f,"
+             "\"pid_timeout_s\":%.1f,"
+             "\"ascent_timeout_s\":%.1f,"
+             "\"surface_offset_m\":%.3f}",
+             static_cast<unsigned>(_config.profileCount),
+             _config.deepTargetM,
+             _config.shallowTopTargetM,
+             shallowBottomTargetM(),
+             _config.depthToleranceM,
+             _config.holdTimeS,
+             _config.pidTimeoutS,
+             _config.ascentTimeoutS,
+             _config.surfaceOffsetM);
+}
+
+// ---------------------------------------------------------------------------
+void ProfileManager::_saveConfig() {
+    StoredProfileConfig stored = {
+        PROFILE_CONFIG_MAGIC,
+        PROFILE_CONFIG_VERSION,
+        _config,
+    };
+
+    Preferences preferences;
+    if (!preferences.begin(PROFILE_CONFIG_NAMESPACE, false)) {
+        Debug.println("Profile config: NVS open failed");
+        return;
+    }
+
+    preferences.putBytes(PROFILE_CONFIG_KEY, &stored, sizeof(stored));
+    preferences.end();
+}
+
+// ---------------------------------------------------------------------------
+void ProfileManager::_applyConfigToSubsystems() {
+    sensors.setSurfaceTargetOffset(_config.surfaceOffsetM);
 }
 
 // ---------------------------------------------------------------------------
@@ -59,14 +192,16 @@ void ProfileManager::logDeploymentPacket() {
              "\"pressure_kpa\":%.2f,"
              "\"depth_m\":%.2f,"
              "\"phase\":\"%s\","
-             "\"sensor_depth_m\":%.2f}",
+             "\"sensor_depth_m\":%.2f,"
+             "\"syringe_u\":%.4f}",
              COMPANY_NUMBER,
              static_cast<unsigned>(_activeProfileId),
              _missionTimeS(),
              sensors.pressure() / 1000.0f,
              sensors.referenceDepthForPhase("deployed"),
              "deployed",
-             sensors.sensorDepth());
+             sensors.sensorDepth(),
+             motorPosToU(motor.position()));
 
     comms.sendMessage(packet, 1000);
 }
@@ -92,7 +227,8 @@ void ProfileManager::_logProfileReading(const char* phase) {
                               sensors.pressure() / 1000.0f,
                               sensors.referenceDepthForPhase(phase),
                               phase,
-                              sensors.sensorDepth());
+                              sensors.sensorDepth(),
+                              motorPosToU(motor.position()));
 }
 
 // ---------------------------------------------------------------------------
@@ -109,8 +245,8 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     const bool isSurfaceTarget = (targetDepth == TARGET_SURFACE);
     const bool isBottomTarget  = (targetDepth == TARGET_BOTTOM);
     const bool isPIDPhase      = !isSurfaceTarget && !isBottomTarget;
-    const bool isDeepTarget    = fabsf(targetDepth - TARGET_DEPTH) < 0.001f;
-    const bool isShallowTarget = fabsf(targetDepth - TARGET_SHALLOW_BOTTOM_DEPTH) < 0.001f;
+    const bool isDeepTarget    = fabsf(targetDepth - _config.deepTargetM) < 0.001f;
+    const bool isShallowTarget = fabsf(targetDepth - shallowBottomTargetM()) < 0.001f;
 
     // --- LED and initial motor positioning ---
     if (isPIDPhase) {
@@ -157,7 +293,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
 
         // --- Measurement tick ---
         // Fase PID gira al ritmo configurabile pidController.periodMs (default 50 ms,
-        // modificabile via CMD_UPDATE_PID_EXT). Fasi simple restano a PERIOD_MEASUREMENT.
+        // modificabile via PID_CONFIG_SET). Fasi simple restano a PERIOD_MEASUREMENT.
         const uint16_t measPeriodMs =
             isPIDPhase ? pidController.periodMs : PERIOD_MEASUREMENT;
         if (millis() - lastMeasMs < measPeriodMs) continue;
@@ -169,11 +305,11 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
 
         if (isPIDPhase) {
             if (isShallowTarget) {
-                phase = (fabsf(currentDepth - targetDepth) < DEPTH_MAX_ERROR)
+                phase = (fabsf(currentDepth - targetDepth) < _config.depthToleranceM)
                         ? "hold_40cm"
                         : "ascending";
             } else {
-                phase = (fabsf(currentDepth - targetDepth) < DEPTH_MAX_ERROR)
+                phase = (fabsf(currentDepth - targetDepth) < _config.depthToleranceM)
                         ? "hold_2_5m"
                         : "descending";
             }
@@ -247,7 +383,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
             (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
         const long posTarget = uToMotorPos(u);
         const long deadbandSteps =
-            (long)(PID_MIN_RETARGET_FRAC * (float)usableSteps);
+            (long)(pidController.minRetargetFrac * (float)usableSteps);
         if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
             motor.enableOutputs();
             motor.startMoveTo(posTarget);
@@ -261,7 +397,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
             // Mark PID-phase records with temperature sentinel
             _logReading(sensors.pressure(), 100.0f);
 
-            if (fabsf(currentDepth - targetDepth) < DEPTH_MAX_ERROR) {
+            if (fabsf(currentDepth - targetDepth) < _config.depthToleranceM) {
                 stableCount++;
                 // Seven 5-second packets span the required 30-second hold.
                 const int requiredTicks =

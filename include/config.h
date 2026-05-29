@@ -50,16 +50,23 @@ constexpr uint32_t MOTOR_MAX_ACCELERATION = 1800; // Normal acceleration/deceler
 constexpr uint32_t MOTOR_HOMING_SPEED    = 1800;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
 
-// Geometria reale: home (motor_pos=0) = siringa retratta, vuota → float galleggia.
-// MOTOR_MAX_STEPS = siringa estesa, piena d'acqua → float affonda.
-// Convenzione "logica" del PID/profile: u=0 → galleggia (siringa vuota),
-//                                       u=1 → affonda (siringa piena).
-// La geometria coincide con la convenzione logica: nessuna inversione necessaria.
-constexpr bool MOTOR_INVERT_LOGICAL = false;
+// Geometria reale (verificata col balance, coerente con l'homing):
+//   home (motor_pos=0)      = piastra lontana dal TOF, acqua spinta fuori → galleggia.
+//   motor_pos negativo      = piastra verso il TOF, prende acqua → affonda.
+// La direzione "verso il TOF / prende acqua" è NEGATIVA (vedi homeWithTof fase 1).
+// Convenzione "logica" del PID/profile: u=0 → galleggia, u=1 → affonda.
+// Quindi u cresce muovendosi in direzione negativa:
+//   uToMotorPos(0.0f) = 0 (home), uToMotorPos(1.0f) = -(MAX - 2*margin).
 inline long uToMotorPos(float u) {
-    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
-    const float uPhys = MOTOR_INVERT_LOGICAL ? (1.0f - u) : u;
-    return (long)MOTOR_ENDSTOP_MARGIN + (long)(uPhys * (float)usable);
+    const long travel = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
+    return -(long)(u * (float)travel);
+}
+inline float motorPosToU(long position) {
+    const long travel = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
+    if (travel <= 0) return 0.0f;
+
+    const float u = -(float)position / (float)travel;
+    return constrain(u, 0.0f, 1.0f);
 }
 constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
 constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during homing (ms)
@@ -90,22 +97,16 @@ constexpr uint16_t BALANCE_PRESSURE_SAMPLE_PERIOD_MS = 50; // Bar02 polling peri
 constexpr uint16_t PERIOD_MEASUREMENT   = 100;   // Between depth readings
 constexpr uint16_t PERIOD_CONN_CHECK    = 500;   // Between idle acknowledgements
 
-#ifdef POOL_TEST_PROFILE
-constexpr uint16_t PERIOD_EEPROM_WRITE   = 2000; // Faster hold checks for shallow pool tests
-constexpr uint16_t PROFILE_LOG_PERIOD_MS = 500;  // Denser flash log for short pool runs
-constexpr uint16_t DATA_PACKET_PERIOD_MS = 2000; // Denser replay packets for short pool runs
-#else
 constexpr uint16_t PERIOD_EEPROM_WRITE   = 5000; // Between EEPROM writes / hold checks
 constexpr uint16_t PROFILE_LOG_PERIOD_MS = 1000; // Between flash profile writes
 constexpr uint16_t DATA_PACKET_PERIOD_MS = 5000; // Packet cadence shown to judges
-#endif
 
 // ---------------------------------------------------------------------------
 // PID TUNING (output normalizzato in [0,1] = frazione di corsa siringa)
 // ---------------------------------------------------------------------------
-// Kp/Ki/Kd mutabili a runtime via CMD_UPDATE_PID (8); periodMs e alphaD via
-// CMD_UPDATE_PID_EXT (14). Espressi in "frazione di corsa per metro di errore",
-// portabili tra siringhe — se cambia MOTOR_MAX_STEPS, i guadagni restano validi.
+// Defaults runtime per PID_CONFIG_SET/GET. Espressi in "frazione di corsa per
+// metro di errore", portabili tra siringhe — se cambia MOTOR_MAX_STEPS, i
+// guadagni restano validi.
 constexpr uint16_t PID_PERIOD_DEFAULT_MS  = 50;    // Default tick PID (ms)
 constexpr float    PID_KP_DEFAULT         = 0.17f; // frazione_corsa / m
 constexpr float    PID_KI_DEFAULT         = 0.0f;  // frazione_corsa / (m·s)
@@ -130,16 +131,6 @@ constexpr float    SENSOR_TO_TOP_M       = FLOAT_TOP_TO_SENSOR_M;
 constexpr float    SURFACE_TARGET_OFFSET_M = 0.10f;
 constexpr float    DEPTH_EPSILON       = 0.01f;  // "Stationary" tolerance (m)
 
-#ifdef POOL_TEST_PROFILE
-constexpr float    POOL_TEST_WATER_DEPTH = 0.70f; // Reference only: assumed test pool depth (m)
-constexpr uint8_t  PROFILE_MAX_COUNT     = 1;     // One cycle keeps shallow-pool tests shorter and safer
-constexpr float    DEPTH_MAX_ERROR       = 0.025f; // Narrow tolerance because pool targets are close together
-constexpr float    TARGET_DEPTH          = 0.63f; // Deep hold: bottom reference (m), ~7 cm above a 70 cm floor
-constexpr float    TARGET_SHALLOW_TOP_DEPTH = 0.06f; // Shallow hold: top reference (m)
-constexpr float    STAT_TIME             = 8.0f;  // Short pool hold; actual check cadence is PERIOD_EEPROM_WRITE
-constexpr float    TIMEOUT_PID_TIME      = 45.0f; // Max PID phase time (s)
-constexpr float    TIMEOUT_ASCENT        = 45.0f; // Max ascent + shallow hold time (s)
-#else
 constexpr uint8_t  PROFILE_MAX_COUNT   = 2;      // Profiles before auto-stop
 constexpr float    DEPTH_MAX_ERROR     = 0.33f;  // MATE depth tolerance (m)
 constexpr float    TARGET_DEPTH        = 2.50f;  // Deep hold: bottom reference (m)
@@ -147,7 +138,6 @@ constexpr float    TARGET_SHALLOW_TOP_DEPTH = 0.40f; // Shallow hold: top refere
 constexpr float    STAT_TIME           = 30.0f;  // MATE hold time at target (s)
 constexpr float    TIMEOUT_PID_TIME    = 180.0f; // Max PID phase time (s)
 constexpr float    TIMEOUT_ASCENT      = 120.0f; // Max ascent + shallow hold time (s)
-#endif
 
 constexpr float    TARGET_SHALLOW_BOTTOM_DEPTH =
     TARGET_SHALLOW_TOP_DEPTH + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;

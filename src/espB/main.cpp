@@ -36,7 +36,7 @@
 const uint8_t BUILTIN_LED_PIN = 2;  // Built-in LED pin on ESP32
 
 /** PROGRAM GLOBAL CONSTANTS **/
-#define BUFFER_SIZE 64      // Serial command buffer size
+#define BUFFER_SIZE 192     // Serial command buffer size
 const uint16_t MAX_CONN_TIME = 100; // Time in ms that has to elapse before send_message function stops to try a sending
 
 /** GLOBAL OBJECTS **/
@@ -50,7 +50,7 @@ char    serialInput[BUFFER_SIZE]; // Serial software buffer used to empty the ha
 EspbBridgeState bridgeState;      // Cached FLOAT status exposed to the GUI
 
 /** LED STATE MANAGEMENT **/
-FloatLEDState current_led_state = LED_INIT;
+LEDState current_led_state = LEDState::OFF;
 unsigned long led_last_update = 0;
 
 
@@ -77,14 +77,14 @@ input_message  input;  // Message received from espA
 /** FUNCTION DECLARATIONS **/
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len);
-void setLEDState(FloatLEDState state);
+void setLEDState(LEDState state);
 void updateLED();
 uint8_t send_command(const output_message& message, uint16_t max_conn_time);
 void serial_handler();
 void setEspNowChannel();
 
 /** LED CONTROL FUNCTIONS **/
-void setLEDState(FloatLEDState state) {
+void setLEDState(LEDState state) {
   if (current_led_state != state) {
     current_led_state = state;
     led_last_update = millis();
@@ -95,16 +95,16 @@ void updateLED() {
   unsigned long currentTime = millis();
   
   switch (current_led_state) {
-    case LED_OFF:
+    case LEDState::OFF:
       digitalWrite(BUILTIN_LED_PIN, LOW);
       break;
       
-    case LED_IDLE:
+    case LEDState::IDLE:
       // Solid on when idle and connected
       digitalWrite(BUILTIN_LED_PIN, HIGH);
       break;
       
-    case LED_ERROR:
+    case LEDState::ERROR:
       // Very fast blink for errors (150ms on/off)
       if ((currentTime - led_last_update) % 300 < 150) {
         digitalWrite(BUILTIN_LED_PIN, HIGH);
@@ -177,7 +177,7 @@ void OnDataSent(const uint8_t * mac, esp_now_send_status_t status) {
     send_result = 1; // If sending succeeds sets the flag to 1
   } else {
     send_result = 0; // Otherwise sets it to 0
-    setLEDState(LED_ERROR); // Indicate communication error
+    setLEDState(LEDState::ERROR); // Indicate communication error
   }
 }
 
@@ -213,10 +213,10 @@ uint8_t send_command(const output_message& message, uint16_t max_conn_time) {
     }
     
     if (send_result) {
-      setLEDState(LED_IDLE); // Communication successful
+      setLEDState(LEDState::IDLE); // Communication successful
       return 1;                                                          // If sending succeeds, function returns 1
     } else if (millis() - prec_time > max_conn_time) {
-      setLEDState(LED_ERROR); // Communication failed
+      setLEDState(LEDState::ERROR); // Communication failed
       return 0;                                                          // If sending failed and max_conn_time milliseconds elapsed
     }
   }
@@ -293,7 +293,7 @@ void setup() {
   }
   
   // Initialization complete
-  setLEDState(LED_IDLE);
+  setLEDState(LEDState::IDLE);
   Serial.println("ESPB initialized successfully");
 }
 
@@ -316,9 +316,7 @@ void loop() {
     if (parsed.type == EspbParsedCommandType::ForwardToEspA) {
       send_command(parsed.message, MAX_CONN_TIME);
     } else if (parsed.type == EspbParsedCommandType::Status) {
-      output_message dummy;
-      memset(&dummy, 0, sizeof(dummy));
-      dummy.command = CMD_IDLE;
+      output_message dummy = makeOutputMessage(CMD_IDLE);
 
       const bool connectionOk = send_command(dummy, MAX_CONN_TIME);
       char statusLine[128];

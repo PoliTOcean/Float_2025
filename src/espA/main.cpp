@@ -39,17 +39,17 @@
 #include "comms.h"
 #include "profile.h"
 #include "flash_storage.h"
+#include "runtime_config.h"
 
 // ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 static uint8_t  g_status          = CMD_IDLE;
-static uint8_t  g_profileCount    = 0;
 static bool     g_autoModeActive  = false;
 static bool     g_autoCommitted   = false;
+static bool     g_autoMissionDone = false;
 static bool     g_idle            = false;
 static bool     g_debugModeActive = false;
-static uint32_t g_testSpeed       = MOTOR_MAX_SPEED;
 
 // Make debug_mode_active reachable by DebugSerial / comms (extern linkage)
 bool debug_mode_active = false;
@@ -98,6 +98,12 @@ void setup() {
                 });
     Debug.println("DebugSerial ready");
 
+    // --- Runtime PID / balance / motor settings ---
+    runtimeConfig.begin();
+
+    // --- Runtime mission profile ---
+    profileManager.beginConfig();
+
     // --- Internal flash mission log ---
     if (flashStorage.begin()) {
         if (!flashStorage.clearLog()) {
@@ -127,6 +133,7 @@ void setup() {
 
     // --- Motor + homing ---
     motor.begin();
+    runtimeConfig.applyMotorConfig();
 
     Debug.println("Initializing TOF sensor...");
     if (!tofSensor.begin()) {
@@ -202,7 +209,7 @@ void loop() {
                 g_idle = false;
                 ledController.setState(LEDState::COMMUNICATION);
             }
-        } else if (g_profileCount < PROFILE_MAX_COUNT && g_autoModeActive) {
+        } else if (!g_autoMissionDone && g_autoModeActive) {
             // No comms — activate autonomous mode
             Debug.println("No comms — entering auto mode");
             ledController.setState(LEDState::AUTO_MODE);
@@ -218,37 +225,43 @@ void loop() {
         bool ack = g_autoCommitted ? true : comms.sendMessage(CMD1_ACK, 1000);
 
         if (ack && motionController.motionAllowed()) {
-            Debug.println("MATE mission: starting vertical profiles");
-            if (!g_autoCommitted) {
-                g_profileCount = 0;
-            }
-            profileManager.resetEEPROM();
-            if (g_profileCount == 0) {
-                profileManager.logDeploymentPacket();
-            }
+            const RuntimeProfileConfig& profileConfig = profileManager.config();
+            Debug.println("Mission: starting vertical profiles");
 
-            while (g_profileCount < PROFILE_MAX_COUNT && motionController.motionAllowed()) {
-                profileManager.beginProfile(g_profileCount + 1);
-                Debug.printf("Profile %d: PID descent to 2.5 m bottom reference\n",
-                             g_profileCount + 1);
-                profileManager.measure(TARGET_DEPTH, STAT_TIME, TIMEOUT_PID_TIME);
+            uint8_t completedProfiles = 0;
+            profileManager.resetEEPROM();
+            profileManager.logDeploymentPacket();
+
+            while (completedProfiles < profileConfig.profileCount && motionController.motionAllowed()) {
+                profileManager.beginProfile(completedProfiles + 1);
+                Debug.printf("Profile %d: PID descent to %.2f m bottom reference\n",
+                             completedProfiles + 1, profileConfig.deepTargetM);
+                profileManager.measure(profileConfig.deepTargetM,
+                                       profileConfig.holdTimeS,
+                                       profileConfig.pidTimeoutS);
                 if (!motionController.motionAllowed()) {
                     break;
                 }
 
                 delay(500);
 
-                Debug.printf("Profile %d: PID ascent to 40 cm top reference\n",
-                             g_profileCount + 1);
-                profileManager.measure(TARGET_SHALLOW_BOTTOM_DEPTH, STAT_TIME, TIMEOUT_ASCENT);
+                Debug.printf("Profile %d: PID ascent to %.2f m top reference\n",
+                             completedProfiles + 1, profileConfig.shallowTopTargetM);
+                profileManager.measure(profileManager.shallowBottomTargetM(),
+                                       profileConfig.holdTimeS,
+                                       profileConfig.ascentTimeoutS);
                 if (!motionController.motionAllowed()) {
                     break;
                 }
 
                 motor.disableOutputs();
-                g_profileCount++;
-                Debug.printf("Profile %d complete\n", g_profileCount);
+                completedProfiles++;
+                Debug.printf("Profile %d complete\n", completedProfiles);
                 delay(500);
+            }
+
+            if (g_autoCommitted && completedProfiles >= profileConfig.profileCount) {
+                g_autoMissionDone = true;
             }
         }
 
@@ -269,7 +282,7 @@ void loop() {
     case CMD_BALANCE: // Drive syringe to full extension then retraction
     {
         if (comms.sendMessage(CMD3_ACK, 1000)) {
-            motionController.balance(5000);
+            motionController.balance();
         }
         g_status = CMD_IDLE;
         break;
@@ -280,6 +293,7 @@ void loop() {
     {
         if (comms.sendMessage(CMD4_ACK, 1000)) {
             profileManager.clearEEPROM();
+            g_autoMissionDone = false;
         }
         g_status = CMD_IDLE;
         break;
@@ -290,6 +304,9 @@ void loop() {
     {
         if (comms.sendMessage(CMD5_ACK, 1000)) {
             g_autoModeActive = !g_autoModeActive;
+            if (g_autoModeActive) {
+                g_autoMissionDone = false;
+            }
             Debug.printf("Auto mode: %s\n", g_autoModeActive ? "ON" : "OFF");
             ledController.setState(g_autoModeActive ? LEDState::AUTO_MODE : LEDState::IDLE);
         }
@@ -309,13 +326,15 @@ void loop() {
                  "\"pressure_kpa\":%.2f,"
                  "\"depth_m\":%.2f,"
                  "\"phase\":\"%s\","
-                 "\"sensor_depth_m\":%.2f}",
+                 "\"sensor_depth_m\":%.2f,"
+                 "\"syringe_u\":%.4f}",
                  COMPANY_NUMBER,
                  static_cast<float>(millis()) / 1000.0f,
                  sensors.pressure() / 1000.0f,
                  sensors.referenceDepthForPhase("live"),
                  "live",
-                 sensors.sensorDepth());
+                 sensors.sensorDepth(),
+                 motorPosToU(motor.position()));
 
         comms.sendMessage(packet, 1000);
         Debug.println("Live snapshot sent");
@@ -335,42 +354,31 @@ void loop() {
     }
 
     // -----------------------------------------------------------------------
-    case CMD_UPDATE_PID: // Update PID gains at runtime
+    case CMD_PID_CONFIG_SET:
     {
-        if (comms.sendMessage(CMD8_ACK, 1000)) {
-            pidController.Kp = comms.lastCommand().params[0];
-            pidController.Ki = comms.lastCommand().params[1];
-            pidController.Kd = comms.lastCommand().params[2];
-            Debug.printf("PID updated: Kp=%.3f Ki=%.3f Kd=%.3f\n",
-                         pidController.Kp, pidController.Ki, pidController.Kd);
-        }
+        const PidConfigPayload& payload = comms.lastCommand().payload.pidConfig;
+        RuntimePidConfig nextConfig;
+        nextConfig.kp = payload.kp;
+        nextConfig.ki = payload.ki;
+        nextConfig.kd = payload.kd;
+        nextConfig.periodMs = static_cast<uint16_t>(payload.periodMs);
+        nextConfig.alphaD = payload.alphaD;
+        nextConfig.integralLimit = payload.integralLimit;
+        nextConfig.minRetargetFrac = payload.minRetargetFrac;
+        nextConfig.uNeutral = payload.uNeutral;
+
+        const bool updated = runtimeConfig.setPidConfig(nextConfig);
+        comms.sendMessage(updated ? CMD8_ACK : CMD8_ERR, 1000);
         g_status = CMD_IDLE;
         break;
     }
 
     // -----------------------------------------------------------------------
-    case CMD_UPDATE_PID_EXT: // Update PID period and derivative LPF coefficient
+    case CMD_PID_CONFIG_GET:
     {
-        if (comms.sendMessage(CMD14_ACK, 1000)) {
-            const float periodMs = comms.lastCommand().params[0];
-            const float alphaD   = comms.lastCommand().params[1];
-            pidController.periodMs = (uint16_t)constrain(periodMs, 20.0f, 500.0f);
-            pidController.alphaD   = constrain(alphaD, 0.05f, 1.0f);
-            Debug.printf("PID ext updated: periodMs=%u alphaD=%.3f\n",
-                         pidController.periodMs, pidController.alphaD);
-        }
-        g_status = CMD_IDLE;
-        break;
-    }
-
-    // -----------------------------------------------------------------------
-    case CMD_SET_SPEED: // Set test movement speed
-    {
-        if (comms.sendMessage(CMD9_ACK, 1000)) {
-            uint32_t freq = comms.lastCommand().freq;
-            g_testSpeed   = constrain(freq, 10u, 1200u);
-            Debug.printf("Test speed set to %u steps/s\n", g_testSpeed);
-        }
+        char packet[OUTPUT_LEN];
+        runtimeConfig.formatPidConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
         g_status = CMD_IDLE;
         break;
     }
@@ -379,8 +387,8 @@ void loop() {
     case CMD_TEST_STEPS: // Manual stepper test
     {
         if (comms.sendMessage(CMD10_ACK, 1000)) {
-            long steps = comms.lastCommand().steps;
-            motionController.manualStepTest(steps, g_testSpeed);
+            long steps = comms.lastCommand().payload.testSteps.steps;
+            motionController.manualStepTest(steps, runtimeConfig.motor().testSpeed);
         }
         g_status = CMD_IDLE;
         break;
@@ -428,8 +436,9 @@ void loop() {
     case CMD_SYRINGE_SET: // Test: posiziona siringa a u in [0,1] per N secondi
     {
         if (comms.sendMessage(CMD15_ACK, 1000)) {
-            const float u   = comms.lastCommand().params[0];
-            const float dur = comms.lastCommand().params[1];
+            const SyringeSetPayload& payload = comms.lastCommand().payload.syringeSet;
+            const float u   = payload.uNorm;
+            const float dur = payload.durationS;
             runSyringeSet(u, dur);
         }
         g_status = CMD_IDLE;
@@ -440,8 +449,9 @@ void loop() {
     case CMD_PID_HOLD: // Test: PID a quota fissa per N secondi
     {
         if (comms.sendMessage(CMD16_ACK, 1000)) {
-            const float depth = comms.lastCommand().params[0];
-            const float dur   = comms.lastCommand().params[1];
+            const PidHoldPayload& payload = comms.lastCommand().payload.pidHold;
+            const float depth = payload.depthM;
+            const float dur   = payload.durationS;
             runPidHold(depth, dur);
         }
         g_status = CMD_IDLE;
@@ -452,7 +462,7 @@ void loop() {
     case CMD_PID_STEP: // Test: step response PID a quota X per 60 s
     {
         if (comms.sendMessage(CMD17_ACK, 1000)) {
-            const float depth = comms.lastCommand().params[0];
+            const float depth = comms.lastCommand().payload.pidStep.depthM;
             runPidStep(depth);
         }
         g_status = CMD_IDLE;
@@ -463,8 +473,90 @@ void loop() {
     case CMD_SET_SURFACE_OFFSET: // Imposta target di galleggiamento (m sotto pelo)
     {
         if (comms.sendMessage(CMD18_ACK, 1000)) {
-            sensors.setSurfaceTargetOffset(comms.lastCommand().params[0]);
+            sensors.setSurfaceTargetOffset(comms.lastCommand().payload.surfaceOffset.meters);
         }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_PROFILE_SET:
+    {
+        const ProfileSetPayload& payload = comms.lastCommand().payload.profileSet;
+        RuntimeProfileConfig nextConfig;
+        nextConfig.profileCount      = payload.profileCount;
+        nextConfig.deepTargetM       = payload.deepTargetM;
+        nextConfig.shallowTopTargetM = payload.shallowTopTargetM;
+        nextConfig.depthToleranceM   = payload.depthToleranceM;
+        nextConfig.holdTimeS         = payload.holdTimeS;
+        nextConfig.pidTimeoutS       = payload.pidTimeoutS;
+        nextConfig.ascentTimeoutS    = payload.ascentTimeoutS;
+        nextConfig.surfaceOffsetM    = payload.surfaceOffsetM;
+
+        const bool updated = profileManager.setConfig(nextConfig);
+        comms.sendMessage(updated ? CMD19_ACK : CMD19_ERR, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_PROFILE_GET:
+    {
+        char packet[OUTPUT_LEN];
+        profileManager.formatConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_BALANCE_CONFIG_SET:
+    {
+        const BalanceConfigPayload& payload = comms.lastCommand().payload.balanceConfig;
+        RuntimeBalanceConfig nextConfig;
+        nextConfig.holdMs = payload.holdMs;
+        nextConfig.stopPressureDeltaKpa = payload.stopPressureDeltaKpa;
+        nextConfig.stopPressureSamples = payload.stopPressureSamples;
+        nextConfig.samplePeriodMs = payload.samplePeriodMs;
+
+        const bool updated = runtimeConfig.setBalanceConfig(nextConfig);
+        comms.sendMessage(updated ? CMD21_ACK : CMD21_ERR, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_BALANCE_CONFIG_GET:
+    {
+        char packet[OUTPUT_LEN];
+        runtimeConfig.formatBalanceConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_MOTOR_CONFIG_SET:
+    {
+        const MotorConfigPayload& payload = comms.lastCommand().payload.motorConfig;
+        RuntimeMotorConfig nextConfig;
+        nextConfig.maxSpeed = payload.maxSpeed;
+        nextConfig.maxAcceleration = payload.maxAcceleration;
+        nextConfig.homingSpeed = payload.homingSpeed;
+        nextConfig.testSpeed = payload.testSpeed;
+
+        const bool updated = runtimeConfig.setMotorConfig(nextConfig);
+        comms.sendMessage(updated ? CMD23_ACK : CMD23_ERR, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_MOTOR_CONFIG_GET:
+    {
+        char packet[OUTPUT_LEN];
+        runtimeConfig.formatMotorConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
         g_status = CMD_IDLE;
         break;
     }
@@ -483,8 +575,10 @@ void loop() {
 // PID TUNING — comandi via seriale USB diretta
 //
 // Comandi accettati (uno per riga, terminato da \n):
-//   PARAMS <kp> <ki> <kd>             — aggiorna guadagni PID
-//   PARAMS_EXT <period_ms> <alpha_d>  — aggiorna periodo tick e LPF coeff
+//   PID_CONFIG_SET <kp> <ki> <kd> <period_ms> <alpha_d> <integral_limit>
+//                  <min_retarget_frac> <u_neutral>
+//                                      — aggiorna e salva configurazione PID
+//   PID_CONFIG_GET                    — stampa configurazione PID corrente
 //   SYRINGE_SET <u_norm> <dur_s>      — siringa a posizione normalizzata [0,1]
 //                                       per N secondi, log depth ogni 100 ms
 //   PID_HOLD <depth_m> <dur_s>        — PID a quota X per N secondi, log a 5 Hz
@@ -509,30 +603,35 @@ static void servicePidTuningSerial() {
 
             // Tokenize semplice (solo separatore spazio)
             const char* cstr = line.c_str();
-            char buf[96];
+            char buf[192];
             strncpy(buf, cstr, sizeof(buf) - 1);
             buf[sizeof(buf) - 1] = '\0';
             char* tok = strtok(buf, " ");
             if (!tok) return;
 
-            if (strcmp(tok, "PARAMS") == 0) {
-                char* a = strtok(nullptr, " ");
-                char* b = strtok(nullptr, " ");
-                char* d = strtok(nullptr, " ");
-                if (!a || !b || !d) { Debug.println("ERR: PARAMS <kp> <ki> <kd>"); return; }
-                pidController.Kp = atof(a);
-                pidController.Ki = atof(b);
-                pidController.Kd = atof(d);
-                Debug.printf("OK PARAMS Kp=%.4f Ki=%.4f Kd=%.4f\n",
-                              pidController.Kp, pidController.Ki, pidController.Kd);
-            } else if (strcmp(tok, "PARAMS_EXT") == 0) {
-                char* a = strtok(nullptr, " ");
-                char* b = strtok(nullptr, " ");
-                if (!a || !b) { Debug.println("ERR: PARAMS_EXT <period_ms> <alpha_d>"); return; }
-                pidController.periodMs = (uint16_t)constrain(atof(a), 20.0f, 500.0f);
-                pidController.alphaD   = constrain((float)atof(b), 0.05f, 1.0f);
-                Debug.printf("OK PARAMS_EXT period=%u alpha=%.3f\n",
-                              pidController.periodMs, pidController.alphaD);
+            if (strcmp(tok, "PID_CONFIG_SET") == 0) {
+                char* values[8] = {};
+                for (char*& value : values) {
+                    value = strtok(nullptr, " ");
+                    if (!value) {
+                        Debug.println("ERR: PID_CONFIG_SET <kp> <ki> <kd> <period_ms> <alpha_d> <integral_limit> <min_retarget_frac> <u_neutral>");
+                        return;
+                    }
+                }
+                RuntimePidConfig config;
+                config.kp = atof(values[0]);
+                config.ki = atof(values[1]);
+                config.kd = atof(values[2]);
+                config.periodMs = static_cast<uint16_t>(atof(values[3]));
+                config.alphaD = atof(values[4]);
+                config.integralLimit = atof(values[5]);
+                config.minRetargetFrac = atof(values[6]);
+                config.uNeutral = atof(values[7]);
+                Debug.println(runtimeConfig.setPidConfig(config) ? "OK PID_CONFIG_SET" : "ERR PID_CONFIG_SET invalid");
+            } else if (strcmp(tok, "PID_CONFIG_GET") == 0) {
+                char packet[OUTPUT_LEN];
+                runtimeConfig.formatPidConfigJson(packet, sizeof(packet));
+                Debug.println(packet);
             } else if (strcmp(tok, "SYRINGE_SET") == 0) {
                 char* a = strtok(nullptr, " ");
                 char* b = strtok(nullptr, " ");
@@ -557,7 +656,7 @@ static void servicePidTuningSerial() {
             }
             return;
         }
-        if (g_serialLineBuf.length() < 95) g_serialLineBuf += c;
+        if (g_serialLineBuf.length() < 191) g_serialLineBuf += c;
     }
 }
 
@@ -619,7 +718,7 @@ static void runPidHold(float depthTarget, float durationS) {
     motor.enableOutputs();
 
     const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
-    const long deadbandSteps = (long)(PID_MIN_RETARGET_FRAC * (float)usable);
+    const long deadbandSteps = (long)(pidController.minRetargetFrac * (float)usable);
     long lastCommandedTarget = motor.position();
 
     const unsigned long t0 = millis();
@@ -672,7 +771,7 @@ static void runPidStep(float depthTarget) {
     motor.enableOutputs();
 
     const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
-    const long deadbandSteps = (long)(PID_MIN_RETARGET_FRAC * (float)usable);
+    const long deadbandSteps = (long)(pidController.minRetargetFrac * (float)usable);
     long lastCommandedTarget = motor.position();
 
     const unsigned long t0 = millis();

@@ -21,7 +21,7 @@ public:
     bool moveToMax(uint32_t timeoutMs = 0, float stopPressureKpa = 0.0f, bool* pressureStop = nullptr, uint8_t* pressureStopSamples = nullptr);
     bool moveToWithTimeout(long targetPosition, uint32_t timeoutMs, bool keepOutputsEnabled = false);
     bool manualStepTest(long steps, uint32_t speed);
-    bool balance(uint32_t holdMs);
+    bool balance();
 
     bool motionAllowed();
     bool emergencyStopActive() const { return _emergencyStop; }
@@ -39,8 +39,14 @@ private:
     bool tofMaxExtensionStopReached(unsigned long nowMs,
                                     unsigned long& lastTofSampleMs,
                                     const char* context);
-    bool pressureStopReached(float stopPressureKpa, uint8_t* pressureStopSamples = nullptr);
-    bool waitWithPressureStop(uint32_t waitMs, float stopPressureKpa, uint8_t* pressureStopSamples = nullptr);
+    bool pressureStopReached(float stopPressureKpa,
+                             uint8_t requiredSamples,
+                             uint8_t* pressureStopSamples = nullptr);
+    bool waitWithPressureStop(uint32_t waitMs,
+                              float stopPressureKpa,
+                              uint8_t requiredSamples,
+                              uint16_t samplePeriodMs,
+                              uint8_t* pressureStopSamples = nullptr);
 
     // Esegue un singolo stroke del balance (extend o retract) come move assoluto
     // verso targetPos. Ritorna true se va a buon fine, false in caso di

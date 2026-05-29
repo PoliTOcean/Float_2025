@@ -31,7 +31,7 @@ void setEspNowChannel() {
 CommsManager::CommsManager() {
     _instance = this;
     memset(&status_to_send, 0, sizeof(status_to_send));
-    memset(&_received,      0, sizeof(_received));
+    _received = makeOutputMessage(CMD_IDLE);
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@
 #include "sensors.h"
 #include "comms.h"
 #include "DebugSerial.h"
+#include "runtime_config.h"
 
 /*
  *******************************************************************************
@@ -128,7 +129,9 @@ bool MotionController::tofMaxExtensionStopReached(unsigned long nowMs,
     return false;
 }
 
-bool MotionController::pressureStopReached(float stopPressureKpa, uint8_t* pressureStopSamples) {
+bool MotionController::pressureStopReached(float stopPressureKpa,
+                                           uint8_t requiredSamples,
+                                           uint8_t* pressureStopSamples) {
     if (stopPressureKpa <= 0.0f) {
         return false;
     }
@@ -137,7 +140,7 @@ bool MotionController::pressureStopReached(float stopPressureKpa, uint8_t* press
     if (pressureKpa > stopPressureKpa) {
         if (pressureStopSamples != nullptr) {
             (*pressureStopSamples)++;
-            if (*pressureStopSamples < BALANCE_STOP_PRESSURE_SAMPLES) {
+            if (*pressureStopSamples < requiredSamples) {
                 return false;
             }
         }
@@ -157,7 +160,11 @@ bool MotionController::pressureStopReached(float stopPressureKpa, uint8_t* press
     return false;
 }
 
-bool MotionController::waitWithPressureStop(uint32_t waitMs, float stopPressureKpa, uint8_t* pressureStopSamples) {
+bool MotionController::waitWithPressureStop(uint32_t waitMs,
+                                            float stopPressureKpa,
+                                            uint8_t requiredSamples,
+                                            uint16_t samplePeriodMs,
+                                            uint8_t* pressureStopSamples) {
     const unsigned long startMs = millis();
 
     while (millis() - startMs < waitMs) {
@@ -165,12 +172,12 @@ bool MotionController::waitWithPressureStop(uint32_t waitMs, float stopPressureK
             return true;
         }
 
-        if (pressureStopReached(stopPressureKpa, pressureStopSamples)) {
+        if (pressureStopReached(stopPressureKpa, requiredSamples, pressureStopSamples)) {
             return true;
         }
 
         ledController.update();
-        delay(BALANCE_PRESSURE_SAMPLE_PERIOD_MS);
+        delay(samplePeriodMs);
     }
 
     return false;
@@ -187,8 +194,10 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
 
     _motor.clearPosition();
     _motor.enableOutputs();
-    _motor.setMaxSpeed(MOTOR_HOMING_SPEED);
-    _motor.setAcceleration(MOTOR_HOMING_SPEED);
+    const RuntimeMotorConfig& motorConfig = runtimeConfig.motor();
+    const RuntimeBalanceConfig& balanceConfig = runtimeConfig.balance();
+    _motor.setMaxSpeed(motorConfig.homingSpeed);
+    _motor.setAcceleration(motorConfig.homingSpeed);
 
     const unsigned long startMs = millis();
     unsigned long lastTofSampleMs = 0;
@@ -268,9 +277,9 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
         }
 
         const unsigned long nowMs = millis();
-        if (nowMs - lastPressureSampleMs >= BALANCE_PRESSURE_SAMPLE_PERIOD_MS) {
+        if (nowMs - lastPressureSampleMs >= balanceConfig.samplePeriodMs) {
             lastPressureSampleMs = nowMs;
-            if (pressureStopReached(stopPressureKpa, pressureStopSamples)) {
+            if (pressureStopReached(stopPressureKpa, balanceConfig.stopPressureSamples, pressureStopSamples)) {
                 if (pressureStop != nullptr) {
                     *pressureStop = true;
                 }
@@ -312,15 +321,14 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
 
     delay(100);
 
-    _motor.startMoveSteps(-static_cast<long>(MOTOR_ENDSTOP_MARGIN));
+    _motor.startMoveSteps(static_cast<long>(MOTOR_ENDSTOP_MARGIN));
     if (!waitForMotor(2000)) {
         Debug.println("Motor homing: timeout during backoff");
         return false;
     }
 
     _motor.setCurrentPosition(0);
-    _motor.setMaxSpeed(MOTOR_MAX_SPEED);
-    _motor.setAcceleration(MOTOR_MAX_ACCELERATION);
+    runtimeConfig.applyMotorConfig();
     _motor.disableOutputs();
     clearEmergencyStop();
 
@@ -377,6 +385,7 @@ bool MotionController::moveToMax(uint32_t timeoutMs,
     const unsigned long startMs = millis();
     unsigned long lastTofSampleMs = 0;
     unsigned long lastPressureSampleMs = 0;
+    const RuntimeBalanceConfig& balanceConfig = runtimeConfig.balance();
 
     while (_motor.distanceToGo() != 0) {
         if (remoteStopRequested()) {
@@ -384,9 +393,9 @@ bool MotionController::moveToMax(uint32_t timeoutMs,
         }
 
         const unsigned long nowMs = millis();
-        if (nowMs - lastPressureSampleMs >= BALANCE_PRESSURE_SAMPLE_PERIOD_MS) {
+        if (nowMs - lastPressureSampleMs >= balanceConfig.samplePeriodMs) {
             lastPressureSampleMs = nowMs;
-            if (pressureStopReached(stopPressureKpa, pressureStopSamples)) {
+            if (pressureStopReached(stopPressureKpa, balanceConfig.stopPressureSamples, pressureStopSamples)) {
                 if (pressureStop != nullptr) {
                     *pressureStop = true;
                 }
@@ -442,14 +451,13 @@ bool MotionController::manualStepTest(long steps, uint32_t speed) {
     Debug.printf("Test: moving %ld steps at %u steps/s\n", steps, speed);
 
     _motor.setMaxSpeed(speed);
-    _motor.setAcceleration(MOTOR_MAX_ACCELERATION);
+    _motor.setAcceleration(runtimeConfig.motor().maxAcceleration);
     _motor.enableOutputs();
     _motor.startMoveSteps(steps);
 
     const bool success = waitForMotor(0);
 
-    _motor.setMaxSpeed(MOTOR_MAX_SPEED);
-    _motor.setAcceleration(MOTOR_MAX_ACCELERATION);
+    runtimeConfig.applyMotorConfig();
     if (success) {
         _motor.disableOutputs();
         Debug.printf("Test complete — pos %ld\n", _motor.position());
@@ -478,7 +486,9 @@ bool MotionController::_balanceStrokeTo(long targetPos,
             remoteStopHit = true;
             return false;
         }
-        if (pressureStopReached(stopPressureKpa, pressureStopSamples)) {
+        if (pressureStopReached(stopPressureKpa,
+                                runtimeConfig.balance().stopPressureSamples,
+                                pressureStopSamples)) {
             pressureStopHit = true;
             return false;
         }
@@ -497,7 +507,7 @@ bool MotionController::_balanceStrokeTo(long targetPos,
     return true;
 }
 
-bool MotionController::balance(uint32_t holdMs) {
+bool MotionController::balance() {
     // Reset di sicurezza: la balance è una routine di spurgo manuale, parte
     // sempre pulita anche se un emergency stop precedente non è stato cancellato.
     clearEmergencyStop();
@@ -510,14 +520,16 @@ bool MotionController::balance(uint32_t holdMs) {
         return false;
     }
 
+    const RuntimeBalanceConfig& balanceConfig = runtimeConfig.balance();
+    const uint32_t holdMs = balanceConfig.holdMs;
     const float baselinePressureKpa = readPressureKpa();
-    const float stopPressureKpa = baselinePressureKpa + BALANCE_STOP_PRESSURE_DELTA_KPA;
+    const float stopPressureKpa = baselinePressureKpa + balanceConfig.stopPressureDeltaKpa;
     uint8_t pressureStopSamples = 0;
 
     Debug.printf("Balance: baseline=%.2f kPa stop=%.2f kPa delta=%.2f kPa\n",
                  baselinePressureKpa,
                  stopPressureKpa,
-                 BALANCE_STOP_PRESSURE_DELTA_KPA);
+                 balanceConfig.stopPressureDeltaKpa);
 
     // u=1 → siringa piena (extend), u=0 → siringa vuota (retract a home).
     // uToMotorPos() rispetta MOTOR_INVERT_LOGICAL: nessuna ipotesi sul segno qui.
@@ -526,7 +538,7 @@ bool MotionController::balance(uint32_t holdMs) {
 
     while (motionAllowed()) {
         if (remoteStopRequested()) return false;
-        if (pressureStopReached(stopPressureKpa, &pressureStopSamples)) return true;
+        if (pressureStopReached(stopPressureKpa, balanceConfig.stopPressureSamples, &pressureStopSamples)) return true;
 
         bool pressureHit = false, remoteHit = false;
         if (!_balanceStrokeTo(extendedPos, "extend", stopPressureKpa,
@@ -536,7 +548,11 @@ bool MotionController::balance(uint32_t holdMs) {
         }
 
         Debug.printf("Balance: hold extended (%lu ms)\n", (unsigned long)holdMs);
-        if (waitWithPressureStop(holdMs, stopPressureKpa, &pressureStopSamples)) {
+        if (waitWithPressureStop(holdMs,
+                                 stopPressureKpa,
+                                 balanceConfig.stopPressureSamples,
+                                 balanceConfig.samplePeriodMs,
+                                 &pressureStopSamples)) {
             return true;
         }
 
@@ -547,7 +563,11 @@ bool MotionController::balance(uint32_t holdMs) {
         }
 
         Debug.printf("Balance: hold retracted (%lu ms)\n", (unsigned long)holdMs);
-        if (waitWithPressureStop(holdMs, stopPressureKpa, &pressureStopSamples)) {
+        if (waitWithPressureStop(holdMs,
+                                 stopPressureKpa,
+                                 balanceConfig.stopPressureSamples,
+                                 balanceConfig.samplePeriodMs,
+                                 &pressureStopSamples)) {
             return true;
         }
     }

@@ -71,22 +71,22 @@ The FLOAT must complete **two vertical profiles** using a buoyancy engine (fluid
 
 **Data Collection & Transmission:**
 
-- Collect depth/pressure measurements during both profiles and transmit judge packets every **5 seconds** (minimum 20 data packets)
-- Store data in ESP32 internal flash as a LittleFS CSV containing: company number, profile id, time, pressure, judge/reference depth, phase, and raw sensor depth
-- After recovery, transmit all collected data wirelessly to the Mission Station
+- Collect depth/pressure measurements during both profiles and keep them locally while the antenna is underwater.
+- Store data in ESP32 internal flash as a LittleFS CSV containing: company number, profile id, time, pressure, judge/reference depth, phase, raw sensor depth, and normalized syringe position `syringe_u`.
+- After surfacing/recovery, replay selected data packets to the Mission Station at the configured packet cadence (`DATA_PACKET_PERIOD_MS`, default 5 s).
 - Data packets must show **7 sequential measurements** (spanning 30 seconds at 5-second intervals: 0, 5, 10, 15, 20, 25, 30) confirming proper depth maintenance at both 2.5m and 0.4m
 
 **Post-Mission Requirements:**
 
-- Upon surface recovery, autonomously transmit all profile data to the CS
-- CS GUI plots depth over time using received data (minimum 20 data packets required)
-- Graph must display time (X-axis) vs depth (Y-axis) for both completed profiles
+- Upon surface recovery, make buffered flash-backed profile data available to the CS.
+- CS GUI fetches the stored profile after the `LISTENING` command.
+- The active GUI plots depth, pressure, and normalized syringe position over time; the judging requirement still only mandates depth over time.
 
 **Current firmware storage note:** the active implementation uses the internal flash CSV log (`FLASH_LOG_PATH`) as the primary mission data source. EEPROM compact records remain only as an internal legacy buffer. The legacy serial command name is still `CLEAR_SD`, but it now resets the flash CSV log and the legacy EEPROM buffer.
 
 **Auto Mode (AM):**
 
-An autonomous operating mode that triggers profile execution in case of connection loss with the CS, ensuring mission completion if communication is temporarily unavailable. AM will autonomously commit up to two profiles when connection is lost, preventing incomplete missions due to transient WiFi failures.
+An autonomous operating mode that triggers profile execution in case of connection loss with the CS, ensuring mission completion if communication is temporarily unavailable. AM will autonomously commit the configured runtime profile count when connection is lost, preventing incomplete missions due to transient WiFi failures.
 
 **Penalties:**
 - Breaking surface or contacting ice sheet during profile: **-5 points per profile**
@@ -102,9 +102,9 @@ The FLOAT has two main logical states: the command execution one, and the idle o
 
 The FLOAT changes its buoyancy by pulling and pushing water through a pair of syringes driven by a stepper motor through a lead screw. The mechanical convention is:
 
-- **Home (`motor_pos = 0`)**: piston fully inserted, **syringes empty of water** → the FLOAT floats. At this position the TOF reads ≈ `TOF_HOMING_THRESHOLD` (75 mm) because the piston is far from the sensor.
-- **Full extension (`motor_pos = uToMotorPos(1.0f)`)**: piston extracted, **syringes full of water** → the FLOAT sinks. TOF reads ≈ `TOF_SAFE_RANGE_MIN_MM` (40 mm).
-- **PID logical convention**: `u ∈ [0, 1]` with `u = 0` → float (empty) and `u = 1` → sink (full). The helper `uToMotorPos(u)` in `include/config.h` maps `u` to the actual motor target while respecting `MOTOR_INVERT_LOGICAL`, so callers never hard-code signs.
+- **Home (`motor_pos = 0`)**: plate/piston far from the TOF, water pushed out, **syringes empty** → the FLOAT floats. At this position the TOF reads ≈ `TOF_HOMING_THRESHOLD` (75 mm).
+- **Sink direction (`motor_pos < 0`)**: plate moves toward the TOF, the syringes take in water, and the FLOAT sinks. Full logical extension is `uToMotorPos(1.0f) = -(MOTOR_MAX_STEPS - 2*MOTOR_ENDSTOP_MARGIN)`.
+- **PID/profile logical convention**: `u ∈ [0, 1]` with `u = 0` → float (empty) and `u = 1` → sink (full). `uToMotorPos(u)` maps logical `u` to motor steps, and `motorPosToU(position)` converts the measured motor position back to the logged `syringe_u`.
 
 TOF safety limits used during motion:
 
@@ -122,7 +122,7 @@ When the FLOAT is "floating", we usually want its top a few centimetres below th
 Two ways to change it:
 
 - **At compile time**: edit `SURFACE_TARGET_OFFSET_M` in `include/config.h`.
-- **At runtime**: send command `SURFACE_OFFSET <m>` via the CS, or `SURFACE_OFFSET <m>` over USB serial on ESPA. The change persists until the next reboot.
+- **At runtime**: set the profile surface offset from NEXUS/GUI to persist it on ESPA, or send `SURFACE_OFFSET <m>` via CS/USB for a temporary tuning change until reboot.
 
 The offset is geometry-agnostic: `FLOAT_TOP_TO_SENSOR_M` (geometric distance between the top of the float and the barometer) and `SURFACE_TARGET_OFFSET_M` (operational target) are kept as separate constants in `include/config.h`.
 
@@ -263,6 +263,7 @@ The project follows a modular architecture with separate compilation units:
 - **Communication** (`lib/comms`) - ESP-NOW wireless protocol and ElegantOTA session management
 - **Sensors** (`lib/sensors`) - Bar02 pressure/depth and INA219 battery monitoring
 - **PID Controller** (`lib/pid`) - depth control algorithm with runtime gain updates
+- **Runtime Config** (`lib/runtime_config`) - persisted PID, balance, and motor settings
 - **Profile Manager** (`lib/profile`) - mission profile execution and flash-backed mission logging
 - **Flash Storage** (`lib/flash_storage`) - LittleFS CSV mission log and replay helpers
 - **LED Controller** (`lib/led`) - RGB status indication system
@@ -288,9 +289,9 @@ stateDiagram-v2
     EXECUTING --> BALANCE: BALANCE Command
     EXECUTING --> SEND_DATA: LISTENING Command
     EXECUTING --> CLEAR_DATA: CLEAR_SD Command
-    EXECUTING --> UPDATE_PID: PARAMS Command
-    EXECUTING --> UPDATE_PID_EXT: PARAMS_EXT Command
-    EXECUTING --> TEST_SPEED: TEST_FREQ Command
+    EXECUTING --> UPDATE_PID: PID_CONFIG_SET Command
+    EXECUTING --> READ_CONFIG: *_CONFIG_GET Command
+    EXECUTING --> UPDATE_CONFIG: PROFILE/BALANCE/MOTOR_CONFIG_SET Command
     EXECUTING --> TEST_STEPS: TEST_STEPS Command
     EXECUTING --> DEBUG_MODE: DEBUG Command
     EXECUTING --> HOMING: HOME_MOTOR Command
@@ -308,9 +309,9 @@ stateDiagram-v2
     BALANCE --> IDLE: Balance Complete
     SEND_DATA --> IDLE: Data Sent
     CLEAR_DATA --> IDLE: Flash Log Cleared
-    UPDATE_PID --> IDLE: Gains Updated
-    UPDATE_PID_EXT --> IDLE: Period/alpha Updated
-    TEST_SPEED --> IDLE: Speed Stored
+    UPDATE_PID --> IDLE: PID Config Stored
+    READ_CONFIG --> IDLE: JSON Sent
+    UPDATE_CONFIG --> IDLE: Runtime Config Stored
     TEST_STEPS --> IDLE: Test Move Complete
     DEBUG_MODE --> IDLE: Debug Toggle Complete
     OTA --> IDLE: Upload Complete
@@ -443,24 +444,30 @@ Table of FLOAT commands with relative effects and acknowledgements:
 
 |    Cmd string    | Cmd ESPA number | Cmd effects                                                                                                                                                     |       ESPA ack string       |      ESPA ack effects on ESPB state       |
 | :--------------: | :-------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------: | :---------------------------------------: |
-|        GO        |        1        | Performs the two MATE vertical profiles, sends the pre-descent data packet before the first descent, and logs pressure/depth records to flash CSV                 |          GO_RECVD           |    status to 2 (command execution)<br>    |
-|    LISTENING     |        2        | Streams flash CSV records as JSON data packets at 5-second cadence, followed by `STOP_DATA`                                                                      |     Ack is data itself      |  status to 2 after first package arrival  |
+|        GO        |        1        | Runs the configured runtime profile sequence, sends the pre-descent data packet before the first descent, and logs pressure/depth/syringe records to flash CSV    |          GO_RECVD           |    status to 2 (command execution)<br>    |
+|    LISTENING     |        2        | Replays stored flash CSV records as JSON data packets after recovery/fetch, filtered by `DATA_PACKET_PERIOD_MS`, followed by `STOP_DATA`                         |     Ack is data itself      |  status to 2 after first package arrival  |
 |     BALANCE      |        3        | Cycles full extension and retraction with `holdMs` holds until Bar02 pressure rises above the startup baseline by `BALANCE_STOP_PRESSURE_DELTA_KPA`. Requires the motor to be homed first — otherwise the command fails with `Balance: homing required` | CMD3_RECVD | status to 2 |
 |     CLEAR_SD     |        4        | Clears and recreates the flash CSV log, and clears the legacy EEPROM buffer. The command string is kept as `CLEAR_SD` for compatibility                          |         CMD4_RECVD          |                status to 2                |
 | SWITCH_AUTO_MODE |        5        | Toggles FLOAT Auto Mode                                                                                                                                          |       SWITCH_AM_RECVD       | status to 2, AM activation state toggled  |
-|   SEND_PACKAGE   |        6        | Sends a single live JSON snapshot containing company number, time, pressure, judge/reference depth, phase, and raw sensor depth                                  |  Ack is the package itself  |                status to 2                |
+|   SEND_PACKAGE   |        6        | Sends a single live JSON snapshot containing company number, time, pressure, judge/reference depth, phase, raw sensor depth, and `syringe_u`                    |  Ack is the package itself  |                status to 2                |
 |    TRY_UPLOAD    |        7        | Starts the ElegantOTA access point on ESPA for a 5-minute upload window, then restores ESP-NOW                                                                    |       TRY_UPLOAD_RECVD      |                status to 2                |
-| `PARAMS kp ki kd` |        8        | Updates PID gains at runtime                                                                                                                                    |      CHNG_PARMS_RECVD       |                status to 2                |
-| `TEST_FREQ freq` |        9        | Sets manual test movement speed, clamped to 10-1200 steps/s                                                                                                      |       TEST_FREQ_RECVD       |                status to 2                |
-| `TEST_STEPS n`   |       10        | Moves the motor by `n` relative steps at the current test speed                                                                                                  |      TEST_STEPS_RECVD       |                status to 2                |
+| `PID_CONFIG_SET kp ki kd period_ms alpha_d integral_limit min_retarget_frac u_neutral` | 8 | Updates and persists PID runtime configuration                                                    |      PID_CONFIG_SET_RECVD   |                status to 2                |
+| reserved          |        9        | Reserved for backwards-compatible command numbering                                                                                                            |              -              |                    -                      |
+| `TEST_STEPS n`   |       10        | Moves the motor by `n` relative steps at the configured motor test speed                                                                                        |      TEST_STEPS_RECVD       |                status to 2                |
 |      DEBUG       |       11        | Toggles remote debug forwarding through `DebugSerial`                                                                                                            |      DEBUG_MODE_RECVD       |                status to 2                |
 |    HOME_MOTOR    |       12        | Runs TOF-based homing remotely                                                                                                                                   |          HOME_RECVD         |                status to 2                |
 |       STOP       |       13        | Triggers a remote emergency stop, stops the motor, disables outputs, and returns to idle                                                                          |         STOP_RECVD          |                status to 2                |
-| `PARAMS_EXT period alpha` | 14    | Updates PID tick period (ms) and derivative LPF coefficient `alphaD` at runtime                                                                                  |     CHNG_PID_EXT_RECVD      |                status to 2                |
+| `PID_CONFIG_GET` |       14        | Returns current PID runtime configuration as JSON                                                                                                                |          JSON packet         |                status to 2                |
 | `SYRINGE_SET u dur_s` | 15      | Bench test: drives the syringe to normalized position `u ∈ [0,1]` for `dur_s` seconds, logging depth — bypasses the PID (DC gain / time-constant characterization) | SYRINGE_SET_RECVD           |                status to 2                |
 | `PID_HOLD depth dur_s` | 16     | Bench test: holds depth at `depth_m` for `dur_s` seconds with the PID active, logging at 5 Hz                                                                    | PID_HOLD_RECVD              |                status to 2                |
 | `PID_STEP depth` |        17       | Bench test: step response — drives the PID to `depth_m` for up to 60 s, logging at 10 Hz                                                                          | PID_STEP_RECVD              |                status to 2                |
 | `SURFACE_OFFSET m` |     18        | Sets the surface target offset (`SURFACE_TARGET_OFFSET_M`) at runtime: the FLOAT will hold its top `m` metres below the waterline when "floating" (default `0.10`) | SURFACE_OFF_RECVD           |                status to 2                |
+| `PROFILE_SET count deep shallow_top tol hold pid_timeout ascent_timeout surface_offset` | 19 | Updates and persists mission profile configuration used by `GO`                                                                                  | PROFILE_SET_RECVD / PROFILE_SET_ERR | status to 2 |
+| `PROFILE_GET` | 20 | Returns current mission profile configuration as JSON                                                                                                           | JSON packet | status to 2 |
+| `BALANCE_CONFIG_SET hold_ms stop_delta_kpa stop_samples sample_period_ms` | 21 | Updates and persists balance routine configuration                                                                         | BALANCE_CONFIG_SET_RECVD / BALANCE_CONFIG_SET_ERR | status to 2 |
+| `BALANCE_CONFIG_GET` | 22 | Returns current balance configuration as JSON                                                                                                  | JSON packet | status to 2 |
+| `MOTOR_CONFIG_SET max_speed max_accel homing_speed test_speed` | 23 | Updates and persists motor speed/acceleration configuration                                                                 | MOTOR_CONFIG_SET_RECVD / MOTOR_CONFIG_SET_ERR | status to 2 |
+| `MOTOR_CONFIG_GET` | 24 | Returns current motor configuration as JSON                                                                                                    | JSON packet | status to 2 |
 |      STATUS      |        -        | Requests stale ESPB status plus AM state, WiFi connection state, battery millivolts, and last RSSI                                                               |              -              |                     -                     |
 
 Once a command is completed, ESPA acknowledgement can be:
@@ -557,18 +564,23 @@ The GUI sends command strings to ESPB over USB serial. ESPB parses the string, s
 | `SWITCH_AUTO_MODE` | 5 | `SWITCH_AM_RECVD` |
 | `SEND_PACKAGE` | 6 | Live JSON packet |
 | `TRY_UPLOAD` | 7 | `TRY_UPLOAD_RECVD` |
-| `PARAMS kp ki kd` | 8 | `CHNG_PARMS_RECVD` |
-| `TEST_FREQ freq` | 9 | `TEST_FREQ_RECVD` |
+| `PID_CONFIG_SET kp ki kd period_ms alpha_d integral_limit min_retarget_frac u_neutral` | 8 | `PID_CONFIG_SET_RECVD` / `PID_CONFIG_SET_ERR` |
 | `TEST_STEPS n` | 10 | `TEST_STEPS_RECVD` |
 | `DEBUG` | 11 | `DEBUG_MODE_RECVD` |
 | `HOME_MOTOR` | 12 | `HOME_RECVD` |
 | `STOP` | 13 | `STOP_RECVD` |
-| `PARAMS_EXT period_ms alpha_d` | 14 | `CHNG_PID_EXT_RECVD` |
+| `PID_CONFIG_GET` | 14 | PID config JSON |
 | `SYRINGE_SET u dur_s` | 15 | `SYRINGE_SET_RECVD` |
 | `PID_HOLD depth_m dur_s` | 16 | `PID_HOLD_RECVD` |
 | `PID_STEP depth_m` | 17 | `PID_STEP_RECVD` |
 | `SURFACE_OFFSET m` | 18 | `SURFACE_OFF_RECVD` |
-| `STATUS` | - | ESPB local status line with five ` | `-separated fields |
+| `PROFILE_SET count deep shallow_top tol hold pid_timeout ascent_timeout surface_offset` | 19 | `PROFILE_SET_RECVD` / `PROFILE_SET_ERR` |
+| `PROFILE_GET` | 20 | Profile JSON |
+| `BALANCE_CONFIG_SET hold_ms stop_delta_kpa stop_samples sample_period_ms` | 21 | `BALANCE_CONFIG_SET_RECVD` / `BALANCE_CONFIG_SET_ERR` |
+| `BALANCE_CONFIG_GET` | 22 | Balance config JSON |
+| `MOTOR_CONFIG_SET max_speed max_accel homing_speed test_speed` | 23 | `MOTOR_CONFIG_SET_RECVD` / `MOTOR_CONFIG_SET_ERR` |
+| `MOTOR_CONFIG_GET` | 24 | Motor config JSON |
+| `STATUS` | - | ESPB local status line with five pipe-separated fields |
 
 The peer MAC addresses are configured centrally in `include/config.h`: `MAC_ESPA` is used by ESPB, and `MAC_ESPB` is used by ESPA.
 
@@ -598,15 +610,15 @@ Driven by `LEDState` (scoped enum in [`lib/led/include/led.h`](lib/led/include/l
 | **Orange Blink** | `LEDState::OTA_MODE` | OTA update mode active |
 | **Off** | `LEDState::OFF` | System off or disabled |
 
-> ESPB uses a separate `FloatLEDState` enum (`LED_*` prefix) defined in [`include/float_common.h`](include/float_common.h); the two enums are deliberately independent because the two boards have different LED states to signal.
+> ESPA and ESPB share the logical `LEDState` enum from [`include/float_common.h`](include/float_common.h). ESPA maps every state to the external RGB LED; ESPB maps only the built-in LED states it can represent.
 
 ### ESPB (Communication Bridge) LED States:
 
 | LED Pattern | State | Description |
 |:----------------:|:-----:|:------------|
-| **Solid On** | `LED_IDLE` | Connected and ready |
-| **Very Fast Blink** | `LED_ERROR` | Communication error |
-| **Off** | `LED_OFF` | System off or disabled |
+| **Solid On** | `LEDState::IDLE` | Connected and ready |
+| **Very Fast Blink** | `LEDState::ERROR` | Communication error |
+| **Off** | `LEDState::OFF` | System off or disabled |
 
 > **Note**: ESPB uses the built-in LED (pin 2) with different blink patterns to indicate status, as it does not have external RGB connections.
 
@@ -619,7 +631,6 @@ Driven by `LEDState` (scoped enum in [`lib/led/include/led.h`](lib/led/include/l
 | Environment | Purpose | Main Source |
 |:------------|:--------|:------------|
 | `espA` | Float controller firmware with sensors, TOF homing, motion control, PID, ESP-NOW, and OTA | `src/espA/main.cpp` |
-| `espA_pool` | ESPA firmware compiled with conservative 70 cm pool-test targets (`POOL_TEST_PROFILE`) | `src/espA/main.cpp` |
 | `espB` | USB-to-ESP-NOW bridge for the Control Station | `src/espB/main.cpp` |
 | `espA_manual_keyboard` | Bench firmware for serial keyboard continuous motor movement without homing | `src/espA_manual_keyboard/main.cpp` |
 
@@ -627,7 +638,6 @@ Common commands:
 
 ```bash
 pio run -e espA
-pio run -e espA_pool
 pio run -e espB
 pio run -e espA_manual_keyboard
 pio test -e espA
@@ -648,11 +658,7 @@ pio run -e espA -t upload
 pio run -e espB -t upload
 ```
 
-For a conservative shallow-pool test at about 70 cm, upload ESPA with:
-
-```bash
-pio run -e espA_pool -t upload
-```
+Shallow-pool profile values are configured at runtime from the Control Station GUI.
 
 To open the serial monitor at 115200 baud:
 
@@ -667,8 +673,8 @@ All commands in the FLOAT Commands table can be sent over the ESPB USB serial br
 
 | Command | Effect |
 |:--------|:-------|
-| `PARAMS <kp> <ki> <kd>` | Update PID gains at runtime (same effect as command 8) |
-| `PARAMS_EXT <period_ms> <alpha_d>` | Update PID tick period and derivative LPF coefficient (command 14) |
+| `PID_CONFIG_SET <kp> <ki> <kd> <period_ms> <alpha_d> <integral_limit> <min_retarget_frac> <u_neutral>` | Update and persist PID runtime configuration (command 8) |
+| `PID_CONFIG_GET` | Print current PID configuration JSON (command 14) |
 | `SYRINGE_SET <u> <dur_s>` | Drive the syringe to position `u ∈ [0,1]` for `dur_s` seconds and log depth — bypasses the PID, useful for DC-gain and time-constant estimation (command 15) |
 | `PID_HOLD <depth_m> <dur_s>` | Hold PID at `depth_m` for `dur_s` seconds, log at 5 Hz (command 16) |
 | `PID_STEP <depth_m>` | Step response: PID at `depth_m` for up to 60 s, log at 10 Hz (command 17) |
@@ -766,11 +772,11 @@ Hardware-oriented tests are stored under `test/`:
 
 ### Continuous Integration
 
-GitHub Actions builds all three PlatformIO environments (`espA`, `espB`, `espA_pool`) on every push to any branch and on every pull request to `master`. Workflow file: [.github/workflows/ci.yml](.github/workflows/ci.yml).
+GitHub Actions builds the production PlatformIO environments (`espA`, `espB`) on every push to any branch and on every pull request to `master`. Workflow file: [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 CI does **not** run the `unit_hw/` or `integration/` PlatformIO tests because they need a real ESP32 with the float wired up. Run those locally on the bench.
 
-Pushing a `v*` tag triggers [.github/workflows/release.yml](.github/workflows/release.yml), which builds all three environments and attaches the resulting `firmware.bin` / `firmware.elf` to a GitHub Release auto-named after the tag.
+Pushing a `v*` tag triggers [.github/workflows/release.yml](.github/workflows/release.yml), which builds the production environments and attaches the resulting `firmware.bin` / `firmware.elf` to a GitHub Release auto-named after the tag.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full git workflow (trunk-based with PR review on `master`), commit conventions, and one-time branch protection setup.
 
@@ -818,9 +824,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full git workflow (trunk-based wi
 
 Recent changes:
 - PID output normalized to `u ∈ [0, 1]` (fraction of syringe travel). Default gains `Kp = 0.17`, `Kd = 0.13`, expressed per metre of depth error so they stay valid if `MOTOR_MAX_STEPS` changes.
-- Motor geometry: home = piston fully inserted (empty syringes, floats); full extension = piston extracted (full syringes, sinks). The mapping `uToMotorPos()` in `include/config.h` encapsulates `MOTOR_INVERT_LOGICAL` so motion code never hard-codes signs.
+- Motor geometry: home = `motor_pos = 0`, empty syringes, floats; increasing `u` maps to negative motor positions, fills the syringes, and sinks. `motorPosToU()` is logged as `syringe_u`.
 - TOF safety range widened to `[40, 85] mm` to give 10 mm of margin above the homing threshold without risking the mechanical end stop.
 - `balance` now refuses to start without a prior homing (was forcing `pos = 0` as a fallback, mechanically risky).
-- New `SURFACE_TARGET_OFFSET_M` constant and `SURFACE_OFFSET <m>` command (number 18) for tuning the surface idle position at runtime.
+- Runtime profile, PID, balance, and motor settings are configurable from NEXUS/GUI and persisted on ESPA; the old `espA_pool` build and `POOL_TEST_PROFILE` flag have been removed.
 **Team Contact:** PoliTOcean @ Politecnico di Torino
 **Maintainers:** Colabella Davide, Benevenga Filippo

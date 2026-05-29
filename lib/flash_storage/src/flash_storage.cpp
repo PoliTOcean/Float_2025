@@ -21,7 +21,7 @@
 
 namespace {
 constexpr char CSV_HEADER[] =
-    "company_number,profile_id,time_s,pressure_kpa,depth_m,phase,sensor_depth_m";
+    "company_number,profile_id,time_s,pressure_kpa,depth_m,phase,sensor_depth_m,syringe_u";
 
 constexpr char LITTLEFS_BASE_PATH[] = "/littlefs";
 
@@ -70,7 +70,8 @@ bool FlashStorageManager::appendRecord(const char* companyNumber,
                                        float pressureKpa,
                                        float depthM,
                                        const char* phase,
-                                       float sensorDepthM) {
+                                       float sensorDepthM,
+                                       float syringeU) {
     if (!ensureLogFile()) return false;
 
     File file = LittleFS.open(FLASH_LOG_PATH, FILE_APPEND);
@@ -92,6 +93,8 @@ bool FlashStorageManager::appendRecord(const char* companyNumber,
     _writeCsvField(file, phase);
     file.print(',');
     file.print(sensorDepthM, 2);
+    file.print(',');
+    file.print(syringeU, 4);
     file.println();
 
     const bool ok = file.getWriteError() == 0;
@@ -150,6 +153,7 @@ bool FlashStorageManager::transmitDataPackets(PacketSender sender, uint32_t time
         char* depthM        = strtok_r(nullptr, ",", &save);
         char* phase         = strtok_r(nullptr, ",", &save);
         char* sensorDepthM  = strtok_r(nullptr, ",", &save);
+        char* syringeU      = strtok_r(nullptr, ",", &save);
 
         if (companyNumber == nullptr || profileId == nullptr || timeS == nullptr ||
             pressureKpa == nullptr || depthM == nullptr || phase == nullptr) {
@@ -172,14 +176,16 @@ bool FlashStorageManager::transmitDataPackets(PacketSender sender, uint32_t time
                  "\"pressure_kpa\":%.2f,"
                  "\"depth_m\":%.2f,"
                  "\"phase\":\"%s\","
-                 "\"sensor_depth_m\":%.2f}",
+                 "\"sensor_depth_m\":%.2f,"
+                 "\"syringe_u\":%.4f}",
                  companyNumber,
                  static_cast<unsigned>(atoi(profileId)),
                  atof(timeS),
                  atof(pressureKpa),
                  atof(depthM),
                  phase,
-                 sensorDepthM == nullptr ? 0.0 : atof(sensorDepthM));
+                 sensorDepthM == nullptr ? 0.0 : atof(sensorDepthM),
+                 syringeU == nullptr ? 0.0 : atof(syringeU));
 
         sender(packet, timeoutMs);
         packetCount++;

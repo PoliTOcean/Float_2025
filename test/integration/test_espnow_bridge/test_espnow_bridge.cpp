@@ -56,9 +56,7 @@ bool sendBroadcastCommand(uint8_t command, uint32_t timeoutMs) {
 }
 
 bool sendCommandTo(const uint8_t* peerMac, uint8_t command, uint32_t timeoutMs) {
-    output_message message;
-    memset(&message, 0, sizeof(message));
-    message.command = command;
+    output_message message = makeOutputMessage(static_cast<FloatCommand>(command));
 
     sendResult = -1;
     const esp_err_t err = esp_now_send(peerMac, reinterpret_cast<const uint8_t*>(&message), sizeof(message));
