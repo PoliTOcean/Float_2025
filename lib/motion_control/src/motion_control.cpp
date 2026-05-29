@@ -531,8 +531,8 @@ bool MotionController::balance() {
                  stopPressureKpa,
                  balanceConfig.stopPressureDeltaKpa);
 
-    // u=1 → siringa piena (extend), u=0 → siringa vuota (retract a home).
-    // uToMotorPos() rispetta MOTOR_INVERT_LOGICAL: nessuna ipotesi sul segno qui.
+    // u=1 → prende acqua (verso il TOF, direzione negativa) = extend.
+    // u=0 → spinge acqua fuori (home, pos=0) = retract.
     const long extendedPos = uToMotorPos(1.0f);
     const long retractedPos = uToMotorPos(0.0f);
 
