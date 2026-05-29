@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-firmware:
+    name: Build firmware for release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        environment: [espA, espB, espA_pool]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO core
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-core-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-core-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build ${{ matrix.environment }}
+        run: pio run -e ${{ matrix.environment }}
+
+      - name: Stage firmware artifact
+        run: |
+          mkdir -p artifacts
+          cp .pio/build/${{ matrix.environment }}/firmware.bin \
+             "artifacts/${{ matrix.environment }}-${{ github.ref_name }}.bin"
+          cp .pio/build/${{ matrix.environment }}/firmware.elf \
+             "artifacts/${{ matrix.environment }}-${{ github.ref_name }}.elf"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.environment }}
+          path: artifacts/*
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-firmware
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: firmware-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.bin
+            artifacts/*.elf
+          fail_on_unmatched_files: true
