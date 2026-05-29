@@ -7,6 +7,7 @@
  *******************************************************************************
  * flash_storage.h
  * ESP32 internal flash CSV logging helper backed by LittleFS.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

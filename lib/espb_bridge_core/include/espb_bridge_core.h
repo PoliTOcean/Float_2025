@@ -3,6 +3,15 @@
 #include <Arduino.h>
 #include <float_common.h>
 
+/*
+ *******************************************************************************
+ * espb_bridge_core.h
+ * Pure-logic core of the ESPB bridge: command parsing, status formatting, and
+ * the GUI/ESPA protocol contract. Kept hardware-agnostic to allow unit testing.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
+ *******************************************************************************
+ */
+
 constexpr int8_t ESPB_STATUS_UNKNOWN = -1;
 constexpr int8_t ESPB_STATUS_CONNECTED = 0;
 constexpr int8_t ESPB_STATUS_CONNECTED_W_DATA = 1;

@@ -9,6 +9,7 @@
  * siringa). Derivata su misura filtrata con LPF IIR, anti-windup conditional.
  * Guadagni espressi in "frazione di corsa per metro di errore" — portabili tra
  * geometrie diverse della siringa/motore.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

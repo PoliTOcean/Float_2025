@@ -15,6 +15,7 @@
  * zones into a single distance by taking the minimum valid range. This favours
  * detecting the nearest obstacle, which is the correct behaviour for the
  * syringe carriage approach. The enabled zone mask is configured in config.h.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

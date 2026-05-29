@@ -5,7 +5,11 @@
 /*
  *******************************************************************************
  * pid.cpp
- * Implementazione PID con output normalizzato [0, 1].
+ * Depth PID implementation with output normalized to [0, 1] (syringe travel
+ * fraction). Filtered derivative on measurement (IIR LPF) and conditional
+ * anti-windup. Gains are expressed per metre of error, portable across
+ * syringe geometries.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

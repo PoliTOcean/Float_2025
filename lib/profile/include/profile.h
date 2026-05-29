@@ -7,6 +7,7 @@
  * profile.h
  * Depth profile execution: PID-controlled descent, bottom hold, ascent.
  * Also owns mission logging and stored data replay.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

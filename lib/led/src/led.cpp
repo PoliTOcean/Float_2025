@@ -4,6 +4,9 @@
 /*
  *******************************************************************************
  * led.cpp
+ * RGB LED state machine: each state maps to a colour and optional blink
+ * pattern, driven by a non-blocking update() called from the main loop.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 
