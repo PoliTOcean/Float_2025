@@ -1,7 +1,10 @@
 # PoliTOcean Float 2025 - Technical Documentation
 
-**Version:** 11.1.0
+[![CI](https://github.com/PoliTOcean/Float_2025/actions/workflows/ci.yml/badge.svg)](https://github.com/PoliTOcean/Float_2025/actions/workflows/ci.yml)
+
+**Version:** 11.2.0
 **Team:** PoliTOcean @ Politecnico di Torino  
+**Maintainers:** Colabella Davide, Benevenga Filippo  
 **Competition:** MATE ROV 2025/26
 
 --------------------------------------------------------------------------
@@ -95,6 +98,34 @@ The general idea is that the FLOAT provides some micro-services that the CS can 
 
 The FLOAT has two main logical states: the command execution one, and the idle one in which it waits for the new command. In idle state, the FLOAT can have buffered flash data from the last completed profile that can be sent to the CS.
 
+#### Syringe / Motor Convention
+
+The FLOAT changes its buoyancy by pulling and pushing water through a pair of syringes driven by a stepper motor through a lead screw. The mechanical convention is:
+
+- **Home (`motor_pos = 0`)**: piston fully inserted, **syringes empty of water** → the FLOAT floats. At this position the TOF reads ≈ `TOF_HOMING_THRESHOLD` (75 mm) because the piston is far from the sensor.
+- **Full extension (`motor_pos = uToMotorPos(1.0f)`)**: piston extracted, **syringes full of water** → the FLOAT sinks. TOF reads ≈ `TOF_SAFE_RANGE_MIN_MM` (40 mm).
+- **PID logical convention**: `u ∈ [0, 1]` with `u = 0` → float (empty) and `u = 1` → sink (full). The helper `uToMotorPos(u)` in `include/config.h` maps `u` to the actual motor target while respecting `MOTOR_INVERT_LOGICAL`, so callers never hard-code signs.
+
+TOF safety limits used during motion:
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `TOF_HOMING_THRESHOLD` | 75 mm | Phase 2 of homing stops when the TOF reads above this |
+| `TOF_HOMING_APPROACH_MM` | 50 mm | Phase 1 of homing stops when the TOF reads below this |
+| `TOF_SAFE_RANGE_MIN_MM` | 40 mm | Lower bound: syringe fully extended (mechanical limit) |
+| `TOF_SAFE_RANGE_MAX_MM` | 85 mm | Upper bound: 10 mm above the homing threshold; any higher and the piston would risk hitting the back mechanical stop |
+
+#### Surface Target Offset
+
+When the FLOAT is "floating", we usually want its top a few centimetres below the water surface — not exactly at the waterline — so that the float remains visible without being completely above water. This is controlled by `SURFACE_TARGET_OFFSET_M` (default `0.10` m: top of the float 10 cm below the surface).
+
+Two ways to change it:
+
+- **At compile time**: edit `SURFACE_TARGET_OFFSET_M` in `include/config.h`.
+- **At runtime**: send command `SURFACE_OFFSET <m>` via the CS, or `SURFACE_OFFSET <m>` over USB serial on ESPA. The change persists until the next reboot.
+
+The offset is geometry-agnostic: `FLOAT_TOP_TO_SENSOR_M` (geometric distance between the top of the float and the barometer) and `SURFACE_TARGET_OFFSET_M` (operational target) are kept as separate constants in `include/config.h`.
+
 --------------------------------------------------------------------------
 
 ## HARDWARE CONFIGURATION
@@ -106,8 +137,8 @@ The FLOAT has two main logical states: the command execution one, and the idle o
 | ESP32 Dev Module x2 | ESPA float controller and ESPB communication bridge | [Espressif ESP32](https://documentation.espressif.com/esp32-wroom-32e_esp32-wroom-32ue_datasheet_en.pdf) | Arduino framework, ESP-NOW link, USB serial bridge on ESPB |
 | DRV8825 stepper driver | Stepper motor driver for syringe motion | [Pololu DRV8825 carrier](https://www.pololu.com/product/2133) | STEP/DIR control, active-low enable, SLEEP and RESET held HIGH during operation |
 | Stepper motor with planetary gearbox | Syringe actuator motor | [StepperOnline 17HS15-1684S-PG27](https://www.omc-stepperonline.com/it/nema-17-motore-passo-passo-bipolare-l-38mm-w-rapporto-di-riduzione-27-1-riduttore-epicicloidale-17hs15-1684s-pg27) | NEMA 17, 200 steps/rev, 1.8 deg/step, configured gear ratio 26.85124:1, microstep setting 1 |
-| Lead screw / threaded rod | Converts motor rotation to linear travel | [SIENOC 500 mm trapezoidal lead screw](https://www.amazon.it/SIENOC-500mm-Stampante-Trapezoidale-Piombo/dp/B078K7KN8W/) | Pitch 2.0 mm, 4 starts, lead 8.0 mm/rev, configured travel 45 mm |
-| VL53L4CD Time-of-Flight sensor | Non-contact homing distance sensor | [ST VL53L4CD](https://www.st.com/en/imaging-and-photonics-solutions/vl53l4cd.html) | I2C 0x29, XSHUT GPIO16, GPIO1 GPIO15, 24 mm offset, 40 mm homing threshold |
+| Lead screw / threaded rod | Converts motor rotation to linear travel | [SIENOC 500 mm trapezoidal lead screw](https://www.amazon.it/SIENOC-500mm-Stampante-Trapezoidale-Piombo/dp/B078K7KN8W/) | Pitch 2.0 mm, 4 starts, lead 8.0 mm/rev, configured travel 35 mm |
+| VL53L7CX Time-of-Flight sensor | Non-contact homing distance sensor (multi-zone) | [ST VL53L7CX](https://www.st.com/en/imaging-and-photonics-solutions/vl53l7cx.html) | I2C 0x29, LPn (XSHUT) GPIO16, GPIO1 GPIO15, 4×4 zone mode with central-zone mask `0x0660`, 6 mm raw offset, 75 mm homing threshold |
 | Bar02 pressure sensor | Pressure/depth measurement | [Blue Robotics Bar02](https://bluerobotics.com/store/sensors-cameras/sensors/bar02-sensor-r1/) | MS5837_02BA model, I2C 0x76, used for depth and pressure |
 | INA219 battery monitor | Battery bus-voltage monitor | [Adafruit INA219 breakout](https://www.adafruit.com/product/904) | I2C 0x40, initialized at 100 kHz, configured with 5 A max and 0.1 ohm shunt |
 
@@ -124,10 +155,10 @@ The FLOAT has two main logical states: the command execution one, and the idle o
 | SLEEP | GPIO25 | DRV8825 Sleep | Active-LOW, must be HIGH for operation |
 | RST | GPIO26 | DRV8825 Reset | Active-LOW, must be HIGH for operation |
 | **TOF Sensor** ||||
-| SDA | GPIO21 | VL53L4CD I2C Data | I2C bus (shared with sensors) |
-| SCL | GPIO22 | VL53L4CD I2C Clock | I2C bus @ 1MHz |
-| XSHUT | GPIO16 | VL53L4CD Shutdown | Sensor shutdown control |
-| GPIO1 | GPIO15 | VL53L4CD Interrupt | Optional interrupt pin, unused in polling mode |
+| SDA | GPIO21 | VL53L7CX I2C Data | I2C bus (shared with sensors) |
+| SCL | GPIO22 | VL53L7CX I2C Clock | I2C bus @ 1MHz |
+| XSHUT | GPIO16 | VL53L7CX LPn (shutdown) | Sensor enable / shutdown control |
+| GPIO1 | GPIO15 | VL53L7CX Interrupt | Optional interrupt pin, unused in polling mode |
 | **Sensors** ||||
 | SDA | GPIO21 | Bar02, INA219 | I2C bus (shared) |
 | SCL | GPIO22 | Bar02, INA219 | I2C bus (shared) |
@@ -150,11 +181,11 @@ The FLOAT has two main logical states: the command execution one, and the idle o
 
 | Device | Address | Bus Speed |
 |:-------|:-------:|:---------|
-| VL53L4CD TOF | 0x29 | 1 MHz |
+| VL53L7CX TOF | 0x29 | 1 MHz |
 | Bar02 Pressure | 0x76 | Shared I2C bus |
 | INA219 Battery | 0x40 | Initialized at 100 kHz |
 
-> The firmware initializes the INA219 at 100 kHz, then the VL53L4CD driver raises the shared `Wire` clock to 1 MHz for TOF ranging.
+> The firmware initializes the INA219 at 100 kHz, then the VL53L7CX driver raises the shared `Wire` clock to 1 MHz for TOF ranging.
 
 --------------------------------------------------------------------------
 
@@ -186,7 +217,7 @@ graph TB
         subgraph "Motor System"
             DRV8825[DRV8825 Driver]
             STEPPER[Stepper Motor]
-            TOF[VL53L4CD TOF Sensor]
+            TOF[VL53L7CX TOF Sensor]
         end
         
         subgraph "Sensors"
@@ -227,7 +258,7 @@ The project follows a modular architecture with separate compilation units:
 - **Central Config** (`include/config.h`) - pin mapping, motor constants, PID defaults, mission timing, network parameters
 - **Shared Protocol** (`include/float_common.h`) - ESP-NOW packet structs, ACK strings, EEPROM size, shared LED enum
 - **Motor Control** (`lib/motor`) - DRV8825/FastAccelStepper setup, position tracking, bounded movement primitives
-- **TOF Sensor** (`lib/tof`) - VL53L4CD initialization, corrected distance readings, and raw measurement metadata
+- **TOF Sensor** (`lib/tof`) - VL53L7CX initialization (4×4 multi-zone), aggregated minimum-distance reading with raw offset compensation
 - **Motion Control** (`lib/motion_control`) - TOF homing, safe max-extension move, balance routine, emergency stop handling
 - **Communication** (`lib/comms`) - ESP-NOW wireless protocol and ElegantOTA session management
 - **Sensors** (`lib/sensors`) - Bar02 pressure/depth and INA219 battery monitoring
@@ -258,11 +289,16 @@ stateDiagram-v2
     EXECUTING --> SEND_DATA: LISTENING Command
     EXECUTING --> CLEAR_DATA: CLEAR_SD Command
     EXECUTING --> UPDATE_PID: PARAMS Command
+    EXECUTING --> UPDATE_PID_EXT: PARAMS_EXT Command
     EXECUTING --> TEST_SPEED: TEST_FREQ Command
     EXECUTING --> TEST_STEPS: TEST_STEPS Command
     EXECUTING --> DEBUG_MODE: DEBUG Command
     EXECUTING --> HOMING: HOME_MOTOR Command
     EXECUTING --> OTA: TRY_UPLOAD Command
+    EXECUTING --> SYRINGE_SET: SYRINGE_SET Command
+    EXECUTING --> PID_HOLD: PID_HOLD Command
+    EXECUTING --> PID_STEP: PID_STEP Command
+    EXECUTING --> SET_SURFACE_OFFSET: SURFACE_OFFSET Command
     
     PROFILE --> PID_CONTROL: Descending
     PID_CONTROL --> PID_CONTROL: Depth Control Active
@@ -273,10 +309,15 @@ stateDiagram-v2
     SEND_DATA --> IDLE: Data Sent
     CLEAR_DATA --> IDLE: Flash Log Cleared
     UPDATE_PID --> IDLE: Gains Updated
+    UPDATE_PID_EXT --> IDLE: Period/alpha Updated
     TEST_SPEED --> IDLE: Speed Stored
     TEST_STEPS --> IDLE: Test Move Complete
     DEBUG_MODE --> IDLE: Debug Toggle Complete
     OTA --> IDLE: Upload Complete
+    SYRINGE_SET --> IDLE: Bench Test Complete
+    PID_HOLD --> IDLE: Hold Complete / Timeout
+    PID_STEP --> IDLE: Step Complete / Timeout
+    SET_SURFACE_OFFSET --> IDLE: Offset Stored
     
     IDLE_W_DATA --> SENDING: LISTENING Command
     SENDING --> IDLE: Data Transmitted
@@ -404,7 +445,7 @@ Table of FLOAT commands with relative effects and acknowledgements:
 | :--------------: | :-------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------: | :---------------------------------------: |
 |        GO        |        1        | Performs the two MATE vertical profiles, sends the pre-descent data packet before the first descent, and logs pressure/depth records to flash CSV                 |          GO_RECVD           |    status to 2 (command execution)<br>    |
 |    LISTENING     |        2        | Streams flash CSV records as JSON data packets at 5-second cadence, followed by `STOP_DATA`                                                                      |     Ack is data itself      |  status to 2 after first package arrival  |
-|     BALANCE      |        3        | Cycles safe max extension and TOF homing with 5 s holds until Bar02 pressure rises above its startup balance baseline by `BALANCE_STOP_PRESSURE_DELTA_KPA`        |         CMD3_RECVD          |                status to 2                |
+|     BALANCE      |        3        | Cycles full extension and retraction with `holdMs` holds until Bar02 pressure rises above the startup baseline by `BALANCE_STOP_PRESSURE_DELTA_KPA`. Requires the motor to be homed first — otherwise the command fails with `Balance: homing required` | CMD3_RECVD | status to 2 |
 |     CLEAR_SD     |        4        | Clears and recreates the flash CSV log, and clears the legacy EEPROM buffer. The command string is kept as `CLEAR_SD` for compatibility                          |         CMD4_RECVD          |                status to 2                |
 | SWITCH_AUTO_MODE |        5        | Toggles FLOAT Auto Mode                                                                                                                                          |       SWITCH_AM_RECVD       | status to 2, AM activation state toggled  |
 |   SEND_PACKAGE   |        6        | Sends a single live JSON snapshot containing company number, time, pressure, judge/reference depth, phase, and raw sensor depth                                  |  Ack is the package itself  |                status to 2                |
@@ -415,6 +456,11 @@ Table of FLOAT commands with relative effects and acknowledgements:
 |      DEBUG       |       11        | Toggles remote debug forwarding through `DebugSerial`                                                                                                            |      DEBUG_MODE_RECVD       |                status to 2                |
 |    HOME_MOTOR    |       12        | Runs TOF-based homing remotely                                                                                                                                   |          HOME_RECVD         |                status to 2                |
 |       STOP       |       13        | Triggers a remote emergency stop, stops the motor, disables outputs, and returns to idle                                                                          |         STOP_RECVD          |                status to 2                |
+| `PARAMS_EXT period alpha` | 14    | Updates PID tick period (ms) and derivative LPF coefficient `alphaD` at runtime                                                                                  |     CHNG_PID_EXT_RECVD      |                status to 2                |
+| `SYRINGE_SET u dur_s` | 15      | Bench test: drives the syringe to normalized position `u ∈ [0,1]` for `dur_s` seconds, logging depth — bypasses the PID (DC gain / time-constant characterization) | SYRINGE_SET_RECVD           |                status to 2                |
+| `PID_HOLD depth dur_s` | 16     | Bench test: holds depth at `depth_m` for `dur_s` seconds with the PID active, logging at 5 Hz                                                                    | PID_HOLD_RECVD              |                status to 2                |
+| `PID_STEP depth` |        17       | Bench test: step response — drives the PID to `depth_m` for up to 60 s, logging at 10 Hz                                                                          | PID_STEP_RECVD              |                status to 2                |
+| `SURFACE_OFFSET m` |     18        | Sets the surface target offset (`SURFACE_TARGET_OFFSET_M`) at runtime: the FLOAT will hold its top `m` metres below the waterline when "floating" (default `0.10`) | SURFACE_OFF_RECVD           |                status to 2                |
 |      STATUS      |        -        | Requests stale ESPB status plus AM state, WiFi connection state, battery millivolts, and last RSSI                                                               |              -              |                     -                     |
 
 Once a command is completed, ESPA acknowledgement can be:
@@ -517,6 +563,11 @@ The GUI sends command strings to ESPB over USB serial. ESPB parses the string, s
 | `DEBUG` | 11 | `DEBUG_MODE_RECVD` |
 | `HOME_MOTOR` | 12 | `HOME_RECVD` |
 | `STOP` | 13 | `STOP_RECVD` |
+| `PARAMS_EXT period_ms alpha_d` | 14 | `CHNG_PID_EXT_RECVD` |
+| `SYRINGE_SET u dur_s` | 15 | `SYRINGE_SET_RECVD` |
+| `PID_HOLD depth_m dur_s` | 16 | `PID_HOLD_RECVD` |
+| `PID_STEP depth_m` | 17 | `PID_STEP_RECVD` |
+| `SURFACE_OFFSET m` | 18 | `SURFACE_OFF_RECVD` |
 | `STATUS` | - | ESPB local status line with five ` | `-separated fields |
 
 The peer MAC addresses are configured centrally in `include/config.h`: `MAC_ESPA` is used by ESPB, and `MAC_ESPB` is used by ESPA.
@@ -529,21 +580,25 @@ The FLOAT is equipped with RGB LEDs on both ESP32 boards that provide visual fee
 
 ### ESPA (Float Board) LED States:
 
+Driven by `LEDState` (scoped enum in [`lib/led/include/led.h`](lib/led/include/led.h)):
+
 | LED Color/Pattern | State | Description |
 |:----------------:|:-----:|:------------|
-| **Green Solid / Boot Blinks** | `LED_INIT` | System initializing |
-| **Green Solid** | `LED_IDLE` | Ready and idle, waiting for commands |
-| **Green Blink** | `LED_IDLE_WITH_DATA` | Idle with data ready to send |
-| **Red Solid** | `LED_LOW_BATTERY` | Battery voltage below threshold (12.0V) |
-| **Red Blink** | `LED_ERROR` | Error state or motor emergency stop |
-| **Blue Solid** | `LED_PROFILE` | Running non-PID profile phase |
-| **Yellow Blink** | `LED_AUTO_MODE` | Auto mode active |
-| **Purple Blink** | `LED_HOMING` | Motor homing in progress |
-| **Purple Solid** | `LED_MOTOR_MOVING` | Motor moving |
-| **Cyan Blink** | `LED_PID_CONTROL` | PID depth control active |
-| **White Solid** | `LED_COMMUNICATION` | Command received / communicating with ESPB |
-| **Orange Blink** | `LED_OTA_MODE` | OTA update mode active |
-| **Off** | `LED_OFF` | System off or disabled |
+| **Green Solid / Boot Blinks** | `LEDState::INIT` | System initializing |
+| **Green Solid** | `LEDState::IDLE` | Ready and idle, waiting for commands |
+| **Green Blink** | `LEDState::IDLE_WITH_DATA` | Idle with data ready to send |
+| **Red Solid** | `LEDState::LOW_BATTERY` | Battery voltage below `BATT_THRESH` (12.0 V) |
+| **Red Blink** | `LEDState::ERROR` | Error state or motor emergency stop |
+| **Blue Solid** | `LEDState::PROFILE` | Running non-PID profile phase |
+| **Yellow Blink** | `LEDState::AUTO_MODE` | Auto mode active |
+| **Purple Blink** | `LEDState::HOMING` | Motor homing in progress |
+| **Purple Solid** | `LEDState::MOTOR_MOVING` | Motor moving |
+| **Cyan Blink** | `LEDState::PID_CONTROL` | PID depth control active |
+| **White Solid** | `LEDState::COMMUNICATION` | Command received / communicating with ESPB |
+| **Orange Blink** | `LEDState::OTA_MODE` | OTA update mode active |
+| **Off** | `LEDState::OFF` | System off or disabled |
+
+> ESPB uses a separate `FloatLEDState` enum (`LED_*` prefix) defined in [`include/float_common.h`](include/float_common.h); the two enums are deliberately independent because the two boards have different LED states to signal.
 
 ### ESPB (Communication Bridge) LED States:
 
@@ -605,6 +660,19 @@ To open the serial monitor at 115200 baud:
 pio device monitor -e espA
 pio device monitor -e espB
 ```
+
+### Direct USB Tuning Commands (ESPA)
+
+All commands in the FLOAT Commands table can be sent over the ESPB USB serial bridge using the same string syntax. The commands below — useful for bench tuning — can also be sent **directly** over ESPA's USB serial port (e.g. when ESPA is wired to a laptop for tuning runs), bypassing ESPB and ESP-NOW entirely.
+
+| Command | Effect |
+|:--------|:-------|
+| `PARAMS <kp> <ki> <kd>` | Update PID gains at runtime (same effect as command 8) |
+| `PARAMS_EXT <period_ms> <alpha_d>` | Update PID tick period and derivative LPF coefficient (command 14) |
+| `SYRINGE_SET <u> <dur_s>` | Drive the syringe to position `u ∈ [0,1]` for `dur_s` seconds and log depth — bypasses the PID, useful for DC-gain and time-constant estimation (command 15) |
+| `PID_HOLD <depth_m> <dur_s>` | Hold PID at `depth_m` for `dur_s` seconds, log at 5 Hz (command 16) |
+| `PID_STEP <depth_m>` | Step response: PID at `depth_m` for up to 60 s, log at 10 Hz (command 17) |
+| `SURFACE_OFFSET <m>` | Set the surface target offset (`SURFACE_TARGET_OFFSET_M`) at runtime (command 18) |
 
 ### CLI Tests
 
@@ -696,6 +764,16 @@ Hardware-oriented tests are stored under `test/`:
 - `test/integration/test_motor_direction` checks logical/physical motion direction, optionally using TOF
 - `test/integration/test_tof_motor_accuracy` checks TOF and motor movement consistency
 
+### Continuous Integration
+
+GitHub Actions builds all three PlatformIO environments (`espA`, `espB`, `espA_pool`) on every push to any branch and on every pull request to `master`. Workflow file: [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+CI does **not** run the `unit_hw/` or `integration/` PlatformIO tests because they need a real ESP32 with the float wired up. Run those locally on the bench.
+
+Pushing a `v*` tag triggers [.github/workflows/release.yml](.github/workflows/release.yml), which builds all three environments and attaches the resulting `firmware.bin` / `firmware.elf` to a GitHub Release auto-named after the tag.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full git workflow (trunk-based with PR review on `master`), commit conventions, and one-time branch protection setup.
+
 --------------------------------------------------------------------------
 
 ## UTILITIES AND RESOURCES
@@ -704,7 +782,7 @@ Hardware-oriented tests are stored under `test/`:
 - BlueRobotics MS5837: https://github.com/bluerobotics/BlueRobotics_MS5837_Library
 - FastAccelStepper: https://github.com/gin66/FastAccelStepper
 - INA: https://github.com/Zanduino/INA
-- VL53L4CD: https://github.com/stm32duino/VL53L4CD
+- VL53L7CX: https://github.com/stm32duino/VL53L7CX
 - ESPAsyncWebServer: https://github.com/dvarrel/ESPAsyncWebSrv
 - ElegantOTA: https://github.com/ayushsharma82/ElegantOTA
 
@@ -712,7 +790,7 @@ Hardware-oriented tests are stored under `test/`:
 - PlatformIO IDE: Modern embedded development platform
 - ESP32 Arduino Core: Framework for ESP32 development
 - FastAccelStepper Library: Timer/task-driven stepper motor control
-- VL53L4CD Library: Time-of-Flight sensor driver
+- VL53L7CX Library: Multi-zone Time-of-Flight sensor driver
 
 --------------------------------------------------------------------------
 
@@ -735,6 +813,14 @@ Hardware-oriented tests are stored under `test/`:
 
 --------------------------------------------------------------------------
 
-**Documentation Version:** 11.1.0
+**Documentation Version:** 11.2.0
 **Last Updated:** May 2026
+
+Recent changes:
+- PID output normalized to `u ∈ [0, 1]` (fraction of syringe travel). Default gains `Kp = 0.17`, `Kd = 0.13`, expressed per metre of depth error so they stay valid if `MOTOR_MAX_STEPS` changes.
+- Motor geometry: home = piston fully inserted (empty syringes, floats); full extension = piston extracted (full syringes, sinks). The mapping `uToMotorPos()` in `include/config.h` encapsulates `MOTOR_INVERT_LOGICAL` so motion code never hard-codes signs.
+- TOF safety range widened to `[40, 85] mm` to give 10 mm of margin above the homing threshold without risking the mechanical end stop.
+- `balance` now refuses to start without a prior homing (was forcing `pos = 0` as a fallback, mechanically risky).
+- New `SURFACE_TARGET_OFFSET_M` constant and `SURFACE_OFFSET <m>` command (number 18) for tuning the surface idle position at runtime.
 **Team Contact:** PoliTOcean @ Politecnico di Torino
+**Maintainers:** Colabella Davide, Benevenga Filippo
