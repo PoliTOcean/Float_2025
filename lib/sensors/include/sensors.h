@@ -3,12 +3,14 @@
 #include <Arduino.h>
 #include <MS5837.h>
 #include <INA.h>
+#include "config.h"
 
 /*
  *******************************************************************************
  * sensors.h
  * Wraps the Bar02 pressure sensor and INA219 power monitor.
  * Exposes depth calculation and battery voltage reading.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 
@@ -36,6 +38,14 @@ public:
     float topDepth();
     float referenceDepthForPhase(const char* phase);
 
+    // Surface target: the top of the float should sit this many metres below
+    // the water surface when "floating". Runtime-tunable.
+    float surfaceTargetOffset() const { return _surfaceTargetOffsetM; }
+    void  setSurfaceTargetOffset(float meters);
+    // Depth target for the float to reach the desired surface offset, expressed
+    // in the same reference as topDepth(). Equivalent to surfaceTargetOffset().
+    float surfaceTargetDepth() const { return _surfaceTargetOffsetM; }
+
     // Last raw pressure reading (Pa)
     float pressure();
 
@@ -51,6 +61,7 @@ private:
     int8_t    _inaDeviceIndex = -1;  // -1 = not found yet
 
     float     _atmPressurePa  = 0.0f; // Reference pressure set at startup
+    float     _surfaceTargetOffsetM = SURFACE_TARGET_OFFSET_M;
 
     void _initPressureSensor();
     void _initPowerMonitor();

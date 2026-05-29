@@ -6,6 +6,8 @@
  *******************************************************************************
  * config.h
  * Centralized configuration: pin definitions, tuning constants, network params.
+ *
+ * Maintainers: Colabella Davide, Benevenga Filippo
  * Team PoliTOcean @ Politecnico di Torino
  *******************************************************************************
  */
@@ -73,7 +75,7 @@ constexpr float    TOF_DISTANCE_RAW_OFFSET_MM = 6.0f; // Raw distance is this mu
 constexpr float    TOF_HOMING_THRESHOLD     = 75.0f; // Homing stop distance: stop when TOF reads ABOVE this (siringa retratta = lontana dal TOF) (mm)
 constexpr float    TOF_HOMING_APPROACH_MM   = 50.0f; // Approach phase: move toward TOF until reading BELOW this, then start homing (mm)
 constexpr float    TOF_SAFE_RANGE_MIN_MM    = 40.0f; // Safety range lower bound: siringa estesa, troppo vicina al TOF (mm)
-constexpr float    TOF_SAFE_RANGE_MAX_MM    = 80.0f; // Safety range upper bound: siringa retratta, troppo lontana dal TOF (mm). Deve stare sopra TOF_HOMING_THRESHOLD con margine per il rumore (≥10 mm) altrimenti moveToMax fa emergency stop subito dopo l'homing.
+constexpr float    TOF_SAFE_RANGE_MAX_MM    = 85.0f; // Safety range upper bound: siringa retratta, troppo lontana dal TOF (mm). 10 mm sopra TOF_HOMING_THRESHOLD per coprire il rumore TOF post-homing senza spingere il pistone a sbattere meccanicamente.
 
 // ---------------------------------------------------------------------------
 // BALANCE / PURGE CONTROL
@@ -116,9 +118,16 @@ constexpr float    PID_MIN_RETARGET_FRAC  = 0.001f;// dead-band ri-comando (fraz
 // ---------------------------------------------------------------------------
 // FLOAT PHYSICAL / MISSION CONSTANTS
 // ---------------------------------------------------------------------------
-constexpr float    FLOAT_LENGTH        = 0.51f;  // Bottom-to-sensor height (m)
-constexpr float    SENSOR_TO_BOTTOM_M  = FLOAT_LENGTH; // Pressure sensor to bottom reference
-constexpr float    SENSOR_TO_TOP_M     = 0.0f;   // Pressure sensor to top reference; calibrate on hardware
+constexpr float    FLOAT_LENGTH         = 0.51f;  // Bottom-to-sensor height (m)
+constexpr float    SENSOR_TO_BOTTOM_M   = FLOAT_LENGTH; // Pressure sensor to bottom reference
+// Geometric offset between physical top of the float and the barometer.
+// The Bar02 sits at the top, so this is ~0 m; calibrate on hardware if needed.
+constexpr float    FLOAT_TOP_TO_SENSOR_M = 0.0f;
+constexpr float    SENSOR_TO_TOP_M       = FLOAT_TOP_TO_SENSOR_M;
+// Operational target: how deep the *top* of the float should sit below the
+// water surface when the float is "floating". Runtime-tunable via
+// CMD_SET_SURFACE_OFFSET / USB SURFACE_OFFSET command — this is the default.
+constexpr float    SURFACE_TARGET_OFFSET_M = 0.10f;
 constexpr float    DEPTH_EPSILON       = 0.01f;  // "Stationary" tolerance (m)
 
 #ifdef POOL_TEST_PROFILE

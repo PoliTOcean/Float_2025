@@ -8,6 +8,7 @@
  *******************************************************************************
  * motion_control.h
  * Firmware-level motion control that coordinates motor, TOF, LED and debug.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 
@@ -40,6 +41,18 @@ private:
                                     const char* context);
     bool pressureStopReached(float stopPressureKpa, uint8_t* pressureStopSamples = nullptr);
     bool waitWithPressureStop(uint32_t waitMs, float stopPressureKpa, uint8_t* pressureStopSamples = nullptr);
+
+    // Esegue un singolo stroke del balance (extend o retract) come move assoluto
+    // verso targetPos. Ritorna true se va a buon fine, false in caso di
+    // remoteStop/pressureStop/timeout (l'esito esatto è loggato e propagato
+    // tramite pressureStopHit). label è usata solo per i log.
+    bool _balanceStrokeTo(long targetPos,
+                          const char* label,
+                          float stopPressureKpa,
+                          uint8_t* pressureStopSamples,
+                          uint32_t timeoutMs,
+                          bool& pressureStopHit,
+                          bool& remoteStopHit);
 };
 
 // Singleton defined by the main firmware.

@@ -5,6 +5,16 @@
 #include "comms.h"
 #include "DebugSerial.h"
 
+/*
+ *******************************************************************************
+ * motion_control.cpp
+ * High-level motion routines coordinating motor, TOF, LED and emergency stop:
+ * two-phase TOF homing, safe full extension, balance/purge cycles with
+ * pressure-based stop, and remote stop / safety-range supervision.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
+ *******************************************************************************
+ */
+
 MotionController::MotionController(MotorController& motor, TofSensor& tof)
     : _motor(motor),
       _tof(tof) {}
@@ -358,9 +368,9 @@ bool MotionController::moveToMax(uint32_t timeoutMs,
         return false;
     }
 
-    // Home (pos=0) = siringa retratta, vuota. Estendere la siringa = avvicinarsi
-    // al TOF = direzione negativa (vedi homeWithTof fase 1).
-    const long targetPosition = -static_cast<long>(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
+    // Home (pos=0) = pistone tutto inserito, siringa vuota → galleggia.
+    // u=1 → siringa piena → affonda. uToMotorPos() rispetta MOTOR_INVERT_LOGICAL.
+    const long targetPosition = uToMotorPos(1.0f);
     _motor.enableOutputs();
     _motor.startMoveTo(targetPosition);
 
@@ -448,6 +458,45 @@ bool MotionController::manualStepTest(long steps, uint32_t speed) {
     return success;
 }
 
+bool MotionController::_balanceStrokeTo(long targetPos,
+                                        const char* label,
+                                        float stopPressureKpa,
+                                        uint8_t* pressureStopSamples,
+                                        uint32_t timeoutMs,
+                                        bool& pressureStopHit,
+                                        bool& remoteStopHit) {
+    pressureStopHit = false;
+    remoteStopHit   = false;
+
+    Debug.printf("Balance: %s to pos=%ld\n", label, targetPos);
+    _motor.enableOutputs();
+    _motor.startMoveTo(targetPos);
+
+    const unsigned long moveStart = millis();
+    while (_motor.distanceToGo() != 0) {
+        if (remoteStopRequested()) {
+            remoteStopHit = true;
+            return false;
+        }
+        if (pressureStopReached(stopPressureKpa, pressureStopSamples)) {
+            pressureStopHit = true;
+            return false;
+        }
+        if (timeoutMs > 0 && millis() - moveStart > timeoutMs) {
+            char reason[48];
+            snprintf(reason, sizeof(reason), "balance %s timeout", label);
+            emergencyStop(reason);
+            return false;
+        }
+        _motor.run();
+        ledController.update();
+        yield();
+    }
+
+    _motor.disableOutputs();
+    return true;
+}
+
 bool MotionController::balance(uint32_t holdMs) {
     // Reset di sicurezza: la balance è una routine di spurgo manuale, parte
     // sempre pulita anche se un emergency stop precedente non è stato cancellato.
@@ -455,8 +504,10 @@ bool MotionController::balance(uint32_t holdMs) {
     Debug.println("Balance: starting");
 
     if (!_motor.isPositionKnown()) {
-        Debug.println("Balance: motor position unknown, forcing pos=0 as reference");
-        _motor.setCurrentPosition(0);
+        // Senza homing non conosciamo l'orientamento della corsa: estendere
+        // alla cieca rischia di sbattere meccanicamente. Si richiede CMD_HOME.
+        Debug.println("Balance: homing required (motor position unknown)");
+        return false;
     }
 
     const float baselinePressureKpa = readPressureKpa();
@@ -468,71 +519,32 @@ bool MotionController::balance(uint32_t holdMs) {
                  stopPressureKpa,
                  BALANCE_STOP_PRESSURE_DELTA_KPA);
 
-    // Estensione = direzione negativa (verso il TOF). Retrazione = verso pos=0.
-    // Uso startMoveSteps (relativo) invece di startMoveTo per bypassare il
-    // clampTarget del MotorController che limita a [margin, MAX-margin] positivi
-    // — incompatibile con la geometria invertita dove l'estensione è negativa.
-    const long travelSteps = static_cast<long>(MOTOR_MAX_STEPS - 2 * MOTOR_ENDSTOP_MARGIN);
+    // u=1 → siringa piena (extend), u=0 → siringa vuota (retract a home).
+    // uToMotorPos() rispetta MOTOR_INVERT_LOGICAL: nessuna ipotesi sul segno qui.
+    const long extendedPos = uToMotorPos(1.0f);
+    const long retractedPos = uToMotorPos(0.0f);
 
     while (motionAllowed()) {
-        if (remoteStopRequested()) {
-            return false;
-        }
+        if (remoteStopRequested()) return false;
+        if (pressureStopReached(stopPressureKpa, &pressureStopSamples)) return true;
 
-        if (pressureStopReached(stopPressureKpa, &pressureStopSamples)) {
-            return true;
+        bool pressureHit = false, remoteHit = false;
+        if (!_balanceStrokeTo(extendedPos, "extend", stopPressureKpa,
+                              &pressureStopSamples, MOTOR_HOMING_TIMEOUT,
+                              pressureHit, remoteHit)) {
+            return pressureHit; // true se fermato da pressione, false altrimenti
         }
-
-        Debug.printf("Balance: extending %ld steps (negative)\n", travelSteps);
-        _motor.enableOutputs();
-        _motor.startMoveSteps(-travelSteps);
-        {
-            const unsigned long moveStart = millis();
-            while (_motor.distanceToGo() != 0) {
-                if (remoteStopRequested()) {
-                    return false;
-                }
-                if (pressureStopReached(stopPressureKpa, &pressureStopSamples)) {
-                    return true;
-                }
-                if (millis() - moveStart > MOTOR_HOMING_TIMEOUT) {
-                    emergencyStop("balance extend timeout");
-                    return false;
-                }
-                _motor.run();
-                ledController.update();
-                yield();
-            }
-        }
-        _motor.disableOutputs();
 
         Debug.printf("Balance: hold extended (%lu ms)\n", (unsigned long)holdMs);
         if (waitWithPressureStop(holdMs, stopPressureKpa, &pressureStopSamples)) {
             return true;
         }
 
-        Debug.printf("Balance: retracting %ld steps (positive)\n", travelSteps);
-        _motor.enableOutputs();
-        _motor.startMoveSteps(travelSteps);
-        {
-            const unsigned long moveStart = millis();
-            while (_motor.distanceToGo() != 0) {
-                if (remoteStopRequested()) {
-                    return false;
-                }
-                if (pressureStopReached(stopPressureKpa, &pressureStopSamples)) {
-                    return true;
-                }
-                if (millis() - moveStart > MOTOR_HOMING_TIMEOUT) {
-                    emergencyStop("balance retract timeout");
-                    return false;
-                }
-                _motor.run();
-                ledController.update();
-                yield();
-            }
+        if (!_balanceStrokeTo(retractedPos, "retract", stopPressureKpa,
+                              &pressureStopSamples, MOTOR_HOMING_TIMEOUT,
+                              pressureHit, remoteHit)) {
+            return pressureHit;
         }
-        _motor.disableOutputs();
 
         Debug.printf("Balance: hold retracted (%lu ms)\n", (unsigned long)holdMs);
         if (waitWithPressureStop(holdMs, stopPressureKpa, &pressureStopSamples)) {

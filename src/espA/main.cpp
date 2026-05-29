@@ -10,14 +10,14 @@
  *   config.h              — pin definitions, tuning constants
  *   led/led.h             — RGB LED state machine
  *   motor/motor.h         — stepper motor controller
- *   tof/tof.h             - VL53L4CD Time-of-Flight sensor controller
+ *   tof/tof.h             - VL53L7CX Time-of-Flight sensor controller
  *   motion_control.h      — homing, safe movement, and emergency stop
  *   pid/pid.h             — depth PID controller
  *   sensors/sensors.h     — Bar02 pressure sensor + INA219 power monitor
  *   comms/comms.h         — ESP-NOW messaging + OTA
  *   profile/profile.h     — depth profile execution + flash CSV logging
  *
- * Maintainers: Colabella Davide
+ * Maintainers: Colabella Davide, Benevenga Filippo
  * Past contributors: Fachechi Gino Marco, Gullotta Salvatore
  * Company   : Team PoliTOcean @ Politecnico di Torino
  * Board pkg : esp32 by Espressif Systems v2.0.17
@@ -460,6 +460,16 @@ void loop() {
     }
 
     // -----------------------------------------------------------------------
+    case CMD_SET_SURFACE_OFFSET: // Imposta target di galleggiamento (m sotto pelo)
+    {
+        if (comms.sendMessage(CMD18_ACK, 1000)) {
+            sensors.setSurfaceTargetOffset(comms.lastCommand().params[0]);
+        }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
     default:
         Debug.printf("Unknown command: %d\n", g_status);
         g_status = CMD_IDLE;
@@ -480,6 +490,8 @@ void loop() {
 //   PID_HOLD <depth_m> <dur_s>        — PID a quota X per N secondi, log a 5 Hz
 //   PID_STEP <depth_m>                — step response: PID a quota X per
 //                                       max 60 s (esci a regime), log a 10 Hz
+//   SURFACE_OFFSET <m>                — target di galleggiamento: il top del
+//                                       float sta a <m> sotto il pelo (default 0.10)
 //
 // Tutto il logging finisce su Serial (USB), formato CSV per facile import.
 // ---------------------------------------------------------------------------
@@ -535,6 +547,11 @@ static void servicePidTuningSerial() {
                 char* a = strtok(nullptr, " ");
                 if (!a) { Debug.println("ERR: PID_STEP <depth_m>"); return; }
                 runPidStep(atof(a));
+            } else if (strcmp(tok, "SURFACE_OFFSET") == 0) {
+                char* a = strtok(nullptr, " ");
+                if (!a) { Debug.println("ERR: SURFACE_OFFSET <m>"); return; }
+                sensors.setSurfaceTargetOffset(atof(a));
+                Debug.printf("OK SURFACE_OFFSET %.3f m\n", sensors.surfaceTargetOffset());
             } else {
                 Debug.printf("ERR: unknown cmd '%s'\n", tok);
             }

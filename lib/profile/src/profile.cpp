@@ -14,6 +14,10 @@
 /*
  *******************************************************************************
  * profile.cpp
+ * Depth profile state machine: simple descent/ascent endpoints and PID-driven
+ * hold phases. Owns the flash CSV mission log and replay of stored packets to
+ * the control station.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 
@@ -114,7 +118,9 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         pidController.reset();
         if (isDeepTarget) {
             // Pre-position syringe to kick-start the deep descent only.
-            // u=0.979 → siringa quasi piena (logica invertita) → kick-start "affonda".
+            // u=0.979 → siringa quasi piena → spinta iniziale per "affondare".
+            // MOTOR_INVERT_LOGICAL=false: uToMotorPos mappa direttamente la
+            // convenzione logica sulla geometria nativa.
             motionController.moveToWithTimeout(uToMotorPos(0.979f), 0);
         }
     } else {
@@ -172,7 +178,10 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
                         : "descending";
             }
         } else if (isSurfaceTarget) {
-            phase = (fabsf(currentDepth - TARGET_SURFACE) < DEPTH_EPSILON)
+            // Riferimento: top del float a `surfaceTargetOffset` sotto il pelo.
+            // bottomDepth atteso = FLOAT_LENGTH + offset.
+            const float surfaceRefDepth = FLOAT_LENGTH + sensors.surfaceTargetOffset();
+            phase = (fabsf(currentDepth - surfaceRefDepth) < DEPTH_EPSILON)
                     ? "hold_40cm"
                     : "ascending";
         } else if (isBottomTarget) {
@@ -211,9 +220,10 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
                 }
             }
 
-            // Surface hold: wait until depth ≈ FLOAT_LENGTH
+            // Surface hold: wait until depth ≈ FLOAT_LENGTH + surfaceTargetOffset
             if (isSurfaceTarget) {
-                if (fabsf(currentDepth - TARGET_SURFACE) < DEPTH_EPSILON) {
+                const float surfaceRefDepth = FLOAT_LENGTH + sensors.surfaceTargetOffset();
+                if (fabsf(currentDepth - surfaceRefDepth) < DEPTH_EPSILON) {
                     stableCount++;
                 } else {
                     stableCount = 0;

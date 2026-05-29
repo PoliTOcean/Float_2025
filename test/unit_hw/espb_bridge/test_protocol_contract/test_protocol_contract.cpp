@@ -22,18 +22,38 @@ void tearDown() {}
 void test_protocol_contract_table_matches_parser() {
     size_t count = 0;
     const EspbProtocolCommand* commands = espbProtocolCommands(count);
-    TEST_ASSERT_EQUAL_UINT8(13, count);
+    TEST_ASSERT_EQUAL_UINT8(18, count);
 
     for (size_t i = 0; i < count; ++i) {
         char commandLine[64];
-        if (commands[i].commandCode == CMD_UPDATE_PID) {
-            snprintf(commandLine, sizeof(commandLine), "%s 1 2 3", commands[i].commandText);
-        } else if (commands[i].commandCode == CMD_SET_SPEED) {
-            snprintf(commandLine, sizeof(commandLine), "%s 300", commands[i].commandText);
-        } else if (commands[i].commandCode == CMD_TEST_STEPS) {
-            snprintf(commandLine, sizeof(commandLine), "%s -100", commands[i].commandText);
-        } else {
-            snprintf(commandLine, sizeof(commandLine), "%s", commands[i].commandText);
+        switch (commands[i].commandCode) {
+            case CMD_UPDATE_PID:
+                snprintf(commandLine, sizeof(commandLine), "%s 1 2 3", commands[i].commandText);
+                break;
+            case CMD_UPDATE_PID_EXT:
+                snprintf(commandLine, sizeof(commandLine), "%s 50 0.25", commands[i].commandText);
+                break;
+            case CMD_SET_SPEED:
+                snprintf(commandLine, sizeof(commandLine), "%s 300", commands[i].commandText);
+                break;
+            case CMD_TEST_STEPS:
+                snprintf(commandLine, sizeof(commandLine), "%s -100", commands[i].commandText);
+                break;
+            case CMD_SYRINGE_SET:
+                snprintf(commandLine, sizeof(commandLine), "%s 0.5 5", commands[i].commandText);
+                break;
+            case CMD_PID_HOLD:
+                snprintf(commandLine, sizeof(commandLine), "%s 1.5 30", commands[i].commandText);
+                break;
+            case CMD_PID_STEP:
+                snprintf(commandLine, sizeof(commandLine), "%s 1.5", commands[i].commandText);
+                break;
+            case CMD_SET_SURFACE_OFFSET:
+                snprintf(commandLine, sizeof(commandLine), "%s 0.10", commands[i].commandText);
+                break;
+            default:
+                snprintf(commandLine, sizeof(commandLine), "%s", commands[i].commandText);
+                break;
         }
 
         EspbParsedCommand parsed = espbParseSerialCommand(commandLine);
@@ -62,6 +82,11 @@ void test_ack_constants_match_gui_contract() {
     TEST_ASSERT_EQUAL_STRING("DEBUG_MODE_RECVD", CMD11_ACK);
     TEST_ASSERT_EQUAL_STRING("HOME_RECVD", CMD12_ACK);
     TEST_ASSERT_EQUAL_STRING("STOP_RECVD", CMD13_ACK);
+    TEST_ASSERT_EQUAL_STRING("CHNG_PID_EXT_RECVD", CMD14_ACK);
+    TEST_ASSERT_EQUAL_STRING("SYRINGE_SET_RECVD", CMD15_ACK);
+    TEST_ASSERT_EQUAL_STRING("PID_HOLD_RECVD", CMD16_ACK);
+    TEST_ASSERT_EQUAL_STRING("PID_STEP_RECVD", CMD17_ACK);
+    TEST_ASSERT_EQUAL_STRING("SURFACE_OFF_RECVD", CMD18_ACK);
 }
 
 void test_status_tokens_are_gui_parseable() {
