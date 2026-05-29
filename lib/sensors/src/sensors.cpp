@@ -8,6 +8,10 @@
 /*
  *******************************************************************************
  * sensors.cpp
+ * Bar02 pressure sensor + INA219 power monitor wrappers. Computes depth from
+ * raw pressure using Stevino's principle and exposes top/bottom-of-float
+ * references plus the runtime-tunable surface target offset.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 
@@ -91,6 +95,12 @@ float SensorManager::bottomDepth() {
 
 float SensorManager::topDepth() {
     return sensorDepth() - SENSOR_TO_TOP_M;
+}
+
+void SensorManager::setSurfaceTargetOffset(float meters) {
+    if (meters < 0.0f) meters = 0.0f;
+    _surfaceTargetOffsetM = meters;
+    Debug.printf("Surface target offset set to %.3f m\n", _surfaceTargetOffsetM);
 }
 
 float SensorManager::referenceDepthForPhase(const char* phase) {

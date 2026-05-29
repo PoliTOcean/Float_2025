@@ -6,6 +6,8 @@
  *******************************************************************************
  * config.h
  * Centralized configuration: pin definitions, tuning constants, network params.
+ *
+ * Maintainers: Colabella Davide, Benevenga Filippo
  * Team PoliTOcean @ Politecnico di Torino
  *******************************************************************************
  */
@@ -47,6 +49,18 @@ constexpr uint32_t MOTOR_MAX_SPEED       = 1800;  // Normal operating speed (ste
 constexpr uint32_t MOTOR_MAX_ACCELERATION = 1800; // Normal acceleration/deceleration (steps/s^2)
 constexpr uint32_t MOTOR_HOMING_SPEED    = 1800;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
+
+// Geometria reale: home (motor_pos=0) = siringa retratta, vuota → float galleggia.
+// MOTOR_MAX_STEPS = siringa estesa, piena d'acqua → float affonda.
+// Convenzione "logica" del PID/profile: u=0 → galleggia (siringa vuota),
+//                                       u=1 → affonda (siringa piena).
+// La geometria coincide con la convenzione logica: nessuna inversione necessaria.
+constexpr bool MOTOR_INVERT_LOGICAL = false;
+inline long uToMotorPos(float u) {
+    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
+    const float uPhys = MOTOR_INVERT_LOGICAL ? (1.0f - u) : u;
+    return (long)MOTOR_ENDSTOP_MARGIN + (long)(uPhys * (float)usable);
+}
 constexpr uint32_t MOTOR_HOMING_TIMEOUT  = 30000;  // Homing timeout (ms)
 constexpr uint16_t MOTOR_HOMING_TOF_PERIOD_MS = 50; // TOF polling period during homing (ms)
 
@@ -58,11 +72,10 @@ constexpr uint8_t  TOF_GPIO1_PIN         = 15;    // Optional INT pin, unused in
 constexpr uint8_t  TOF_MATRIX_ZONE_COUNT = 16;
 constexpr uint16_t TOF_ZONE_ENABLE_MASK  = 0x0660; // Central zones: 5, 6, 9, 10
 constexpr float    TOF_DISTANCE_RAW_OFFSET_MM = 6.0f; // Raw distance is this much higher than real distance
-constexpr float    TOF_HOMING_THRESHOLD  = 40.0f; // Distance threshold for homing (mm)
-constexpr float    TOF_MAX_STOP_TRAVEL_MM = 40.0f; // Physical safety travel checked by TOF (mm)
-constexpr float    TOF_MAX_STOP_MARGIN_MM = 2.0f; // Extra margin beyond homing distance + syringe travel
-constexpr float    TOF_MAX_STOP_DISTANCE_MM =
-    TOF_HOMING_THRESHOLD + TOF_MAX_STOP_TRAVEL_MM + TOF_MAX_STOP_MARGIN_MM;
+constexpr float    TOF_HOMING_THRESHOLD     = 75.0f; // Homing stop distance: stop when TOF reads ABOVE this (siringa retratta = lontana dal TOF) (mm)
+constexpr float    TOF_HOMING_APPROACH_MM   = 50.0f; // Approach phase: move toward TOF until reading BELOW this, then start homing (mm)
+constexpr float    TOF_SAFE_RANGE_MIN_MM    = 40.0f; // Safety range lower bound: siringa estesa, troppo vicina al TOF (mm)
+constexpr float    TOF_SAFE_RANGE_MAX_MM    = 85.0f; // Safety range upper bound: siringa retratta, troppo lontana dal TOF (mm). 10 mm sopra TOF_HOMING_THRESHOLD per coprire il rumore TOF post-homing senza spingere il pistone a sbattere meccanicamente.
 
 // ---------------------------------------------------------------------------
 // BALANCE / PURGE CONTROL
@@ -88,23 +101,33 @@ constexpr uint16_t DATA_PACKET_PERIOD_MS = 5000; // Packet cadence shown to judg
 #endif
 
 // ---------------------------------------------------------------------------
-// PID TUNING
+// PID TUNING (output normalizzato in [0,1] = frazione di corsa siringa)
 // ---------------------------------------------------------------------------
-// These are mutable at runtime via command 8 (UPDATE_PID), so they live in
-// pid.cpp as extern variables — only defaults are declared here.
-constexpr float PID_KP_DEFAULT        = 2500.0f;
-constexpr float PID_KI_DEFAULT        = 0.0f;
-constexpr float PID_KD_DEFAULT        = 350.0f;
-constexpr float PID_OUTPUT_LIMIT      = 12000.0f;  // Max output magnitude (steps)
-constexpr uint16_t PID_MIN_MOVE_STEPS = 2000;      // Minimum useful PID correction (steps)
-constexpr float PID_INTEGRAL_LIMIT    = 5.0f;    // Anti-windup clamp
+// Kp/Ki/Kd mutabili a runtime via CMD_UPDATE_PID (8); periodMs e alphaD via
+// CMD_UPDATE_PID_EXT (14). Espressi in "frazione di corsa per metro di errore",
+// portabili tra siringhe — se cambia MOTOR_MAX_STEPS, i guadagni restano validi.
+constexpr uint16_t PID_PERIOD_DEFAULT_MS  = 50;    // Default tick PID (ms)
+constexpr float    PID_KP_DEFAULT         = 0.17f; // frazione_corsa / m
+constexpr float    PID_KI_DEFAULT         = 0.0f;  // frazione_corsa / (m·s)
+constexpr float    PID_KD_DEFAULT         = 0.13f; // frazione_corsa / (m/s)
+constexpr float    PID_INTEGRAL_LIMIT     = 5.0f;  // m·s (bound conservativo)
+constexpr float    PID_ALPHA_D_DEFAULT    = 0.25f; // LPF IIR coeff per derivata
+constexpr float    PID_U_NEUTRAL          = 0.011f;// kick-start offset (~500/47100)
+constexpr float    PID_MIN_RETARGET_FRAC  = 0.001f;// dead-band ri-comando (frazione corsa)
 
 // ---------------------------------------------------------------------------
 // FLOAT PHYSICAL / MISSION CONSTANTS
 // ---------------------------------------------------------------------------
-constexpr float    FLOAT_LENGTH        = 0.51f;  // Bottom-to-sensor height (m)
-constexpr float    SENSOR_TO_BOTTOM_M  = FLOAT_LENGTH; // Pressure sensor to bottom reference
-constexpr float    SENSOR_TO_TOP_M     = 0.0f;   // Pressure sensor to top reference; calibrate on hardware
+constexpr float    FLOAT_LENGTH         = 0.51f;  // Bottom-to-sensor height (m)
+constexpr float    SENSOR_TO_BOTTOM_M   = FLOAT_LENGTH; // Pressure sensor to bottom reference
+// Geometric offset between physical top of the float and the barometer.
+// The Bar02 sits at the top, so this is ~0 m; calibrate on hardware if needed.
+constexpr float    FLOAT_TOP_TO_SENSOR_M = 0.0f;
+constexpr float    SENSOR_TO_TOP_M       = FLOAT_TOP_TO_SENSOR_M;
+// Operational target: how deep the *top* of the float should sit below the
+// water surface when the float is "floating". Runtime-tunable via
+// CMD_SET_SURFACE_OFFSET / USB SURFACE_OFFSET command — this is the default.
+constexpr float    SURFACE_TARGET_OFFSET_M = 0.10f;
 constexpr float    DEPTH_EPSILON       = 0.01f;  // "Stationary" tolerance (m)
 
 #ifdef POOL_TEST_PROFILE

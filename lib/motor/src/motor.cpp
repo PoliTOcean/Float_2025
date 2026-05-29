@@ -4,6 +4,10 @@
 /*
  *******************************************************************************
  * motor.cpp
+ * Stepper motor controller backed by FastAccelStepper: driver init, blocking
+ * and non-blocking movement primitives, position tracking, and symmetric
+ * target clamping consistent with uToMotorPos() in config.h.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 
@@ -159,9 +163,12 @@ long MotorController::position() {
 
 // ---------------------------------------------------------------------------
 long MotorController::_clampTarget(long targetPosition) const {
-    return constrain(targetPosition,
-                     static_cast<long>(MOTOR_ENDSTOP_MARGIN),
-                     static_cast<long>(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN));
+    // Range simmetrico per supportare la convenzione geometrica corrente
+    // (u=1 → estensione, mappata in direzione negativa con MOTOR_INVERT_LOGICAL=false).
+    // Vedi uToMotorPos() in config.h.
+    const long lo = -static_cast<long>(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
+    const long hi =  static_cast<long>(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
+    return constrain(targetPosition, lo, hi);
 }
 
 // ---------------------------------------------------------------------------

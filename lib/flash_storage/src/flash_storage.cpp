@@ -12,6 +12,10 @@
 /*
  *******************************************************************************
  * flash_storage.cpp
+ * Mission CSV logging on the ESP32 internal flash via LittleFS. Append-only
+ * writes during a profile and streamed replay via a caller-supplied packet
+ * sender during the LISTENING phase.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

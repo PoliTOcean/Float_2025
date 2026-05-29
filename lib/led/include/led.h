@@ -8,6 +8,7 @@
  * led.h
  * RGB LED state machine.
  * Each state maps to a colour and optional blink pattern.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

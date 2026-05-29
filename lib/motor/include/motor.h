@@ -12,9 +12,12 @@
  * belong to the firmware layer that coordinates multiple controllers.
  *
  * Coordinate system, once the firmware has established a reference:
- *   0                  = reference/home position
- *   MOTOR_MAX_STEPS    = fully extended
- *   Safe range         = [MOTOR_ENDSTOP_MARGIN, MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN]
+ *   0                       = reference/home position (pistone inserito, vuota)
+ *   uToMotorPos(1.0f)       = fully extended (siringa piena d'acqua)
+ *   Safe range (symmetric)  = [-(MAX-margin), +(MAX-margin)]
+ *   See include/config.h: uToMotorPos() respects MOTOR_INVERT_LOGICAL.
+ *
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

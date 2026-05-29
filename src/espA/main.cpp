@@ -10,14 +10,14 @@
  *   config.h              — pin definitions, tuning constants
  *   led/led.h             — RGB LED state machine
  *   motor/motor.h         — stepper motor controller
- *   tof/tof.h             - VL53L4CD Time-of-Flight sensor controller
+ *   tof/tof.h             - VL53L7CX Time-of-Flight sensor controller
  *   motion_control.h      — homing, safe movement, and emergency stop
  *   pid/pid.h             — depth PID controller
  *   sensors/sensors.h     — Bar02 pressure sensor + INA219 power monitor
  *   comms/comms.h         — ESP-NOW messaging + OTA
  *   profile/profile.h     — depth profile execution + flash CSV logging
  *
- * Maintainers: Colabella Davide
+ * Maintainers: Colabella Davide, Benevenga Filippo
  * Past contributors: Fachechi Gino Marco, Gullotta Salvatore
  * Company   : Team PoliTOcean @ Politecnico di Torino
  * Board pkg : esp32 by Espressif Systems v2.0.17
@@ -63,20 +63,26 @@ SensorManager sensors;
 PIDController pidController(PID_KP_DEFAULT, PID_KI_DEFAULT, PID_KD_DEFAULT);
 ProfileManager profileManager;
 // CommsManager comms; // Uncomment if you need this instance here
+
+// Forward declarations — PID tuning helpers (test via seriale USB diretta)
+static void servicePidTuningSerial();
+static void runSyringeSet(float uNorm, float durationS);
+static void runPidHold(float depthTarget, float durationS);
+static void runPidStep(float depthTarget);
 // ---------------------------------------------------------------------------
 // SETUP
 // ---------------------------------------------------------------------------
 void setup() {
     delay(100);
     Serial.begin(115200);
-    Serial.println("=== Float ESPA v10.0 — starting ===");
+    Debug.println("=== Float ESPA v10.0 — starting ===");
 
     // --- LED (first, so we can signal errors immediately) ---
     ledController.setState(LEDState::INIT);
 
     // --- EEPROM ---
     if (!EEPROM.begin(EEPROM_SIZE)) {
-        Serial.println("CRITICAL: EEPROM init failed");
+        Debug.println("CRITICAL: EEPROM init failed");
         ledController.setState(LEDState::ERROR);
         while (true) { ledController.update(); yield(); }
     }
@@ -151,6 +157,7 @@ void setup() {
 void loop() {
     ledController.update();
     motionController.serviceEmergencyStop();
+    servicePidTuningSerial();
 
     // -----------------------------------------------------------------------
     switch (g_status) {
@@ -186,6 +193,7 @@ void loop() {
             while (millis() - t0 < PERIOD_CONN_CHECK &&
                    comms.lastCommand().command == CMD_IDLE) {
                 ledController.update();
+                servicePidTuningSerial();
                 delay(10);
             }
 
@@ -196,7 +204,7 @@ void loop() {
             }
         } else if (g_profileCount < PROFILE_MAX_COUNT && g_autoModeActive) {
             // No comms — activate autonomous mode
-            Serial.println("No comms — entering auto mode");
+            Debug.println("No comms — entering auto mode");
             ledController.setState(LEDState::AUTO_MODE);
             g_status       = CMD_GO;
             g_autoCommitted = true;
@@ -211,6 +219,9 @@ void loop() {
 
         if (ack && motionController.motionAllowed()) {
             Debug.println("MATE mission: starting vertical profiles");
+            if (!g_autoCommitted) {
+                g_profileCount = 0;
+            }
             profileManager.resetEEPROM();
             if (g_profileCount == 0) {
                 profileManager.logDeploymentPacket();
@@ -330,8 +341,23 @@ void loop() {
             pidController.Kp = comms.lastCommand().params[0];
             pidController.Ki = comms.lastCommand().params[1];
             pidController.Kd = comms.lastCommand().params[2];
-            Debug.printf("PID updated: Kp=%.2f Ki=%.2f Kd=%.2f\n",
+            Debug.printf("PID updated: Kp=%.3f Ki=%.3f Kd=%.3f\n",
                          pidController.Kp, pidController.Ki, pidController.Kd);
+        }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_UPDATE_PID_EXT: // Update PID period and derivative LPF coefficient
+    {
+        if (comms.sendMessage(CMD14_ACK, 1000)) {
+            const float periodMs = comms.lastCommand().params[0];
+            const float alphaD   = comms.lastCommand().params[1];
+            pidController.periodMs = (uint16_t)constrain(periodMs, 20.0f, 500.0f);
+            pidController.alphaD   = constrain(alphaD, 0.05f, 1.0f);
+            Debug.printf("PID ext updated: periodMs=%u alphaD=%.3f\n",
+                         pidController.periodMs, pidController.alphaD);
         }
         g_status = CMD_IDLE;
         break;
@@ -399,6 +425,51 @@ void loop() {
     }
 
     // -----------------------------------------------------------------------
+    case CMD_SYRINGE_SET: // Test: posiziona siringa a u in [0,1] per N secondi
+    {
+        if (comms.sendMessage(CMD15_ACK, 1000)) {
+            const float u   = comms.lastCommand().params[0];
+            const float dur = comms.lastCommand().params[1];
+            runSyringeSet(u, dur);
+        }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_PID_HOLD: // Test: PID a quota fissa per N secondi
+    {
+        if (comms.sendMessage(CMD16_ACK, 1000)) {
+            const float depth = comms.lastCommand().params[0];
+            const float dur   = comms.lastCommand().params[1];
+            runPidHold(depth, dur);
+        }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_PID_STEP: // Test: step response PID a quota X per 60 s
+    {
+        if (comms.sendMessage(CMD17_ACK, 1000)) {
+            const float depth = comms.lastCommand().params[0];
+            runPidStep(depth);
+        }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_SET_SURFACE_OFFSET: // Imposta target di galleggiamento (m sotto pelo)
+    {
+        if (comms.sendMessage(CMD18_ACK, 1000)) {
+            sensors.setSurfaceTargetOffset(comms.lastCommand().params[0]);
+        }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
     default:
         Debug.printf("Unknown command: %d\n", g_status);
         g_status = CMD_IDLE;
@@ -406,4 +477,232 @@ void loop() {
     }
 
     delay(10);
+}
+
+// ---------------------------------------------------------------------------
+// PID TUNING — comandi via seriale USB diretta
+//
+// Comandi accettati (uno per riga, terminato da \n):
+//   PARAMS <kp> <ki> <kd>             — aggiorna guadagni PID
+//   PARAMS_EXT <period_ms> <alpha_d>  — aggiorna periodo tick e LPF coeff
+//   SYRINGE_SET <u_norm> <dur_s>      — siringa a posizione normalizzata [0,1]
+//                                       per N secondi, log depth ogni 100 ms
+//   PID_HOLD <depth_m> <dur_s>        — PID a quota X per N secondi, log a 5 Hz
+//   PID_STEP <depth_m>                — step response: PID a quota X per
+//                                       max 60 s (esci a regime), log a 10 Hz
+//   SURFACE_OFFSET <m>                — target di galleggiamento: il top del
+//                                       float sta a <m> sotto il pelo (default 0.10)
+//
+// Tutto il logging finisce su Serial (USB), formato CSV per facile import.
+// ---------------------------------------------------------------------------
+static String g_serialLineBuf;
+
+static void servicePidTuningSerial() {
+    while (Serial.available()) {
+        char c = Serial.read();
+        if (c == '\r') continue;
+        if (c == '\n') {
+            String line = g_serialLineBuf;
+            g_serialLineBuf = "";
+            line.trim();
+            if (line.length() == 0) return;
+
+            // Tokenize semplice (solo separatore spazio)
+            const char* cstr = line.c_str();
+            char buf[96];
+            strncpy(buf, cstr, sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+            char* tok = strtok(buf, " ");
+            if (!tok) return;
+
+            if (strcmp(tok, "PARAMS") == 0) {
+                char* a = strtok(nullptr, " ");
+                char* b = strtok(nullptr, " ");
+                char* d = strtok(nullptr, " ");
+                if (!a || !b || !d) { Debug.println("ERR: PARAMS <kp> <ki> <kd>"); return; }
+                pidController.Kp = atof(a);
+                pidController.Ki = atof(b);
+                pidController.Kd = atof(d);
+                Debug.printf("OK PARAMS Kp=%.4f Ki=%.4f Kd=%.4f\n",
+                              pidController.Kp, pidController.Ki, pidController.Kd);
+            } else if (strcmp(tok, "PARAMS_EXT") == 0) {
+                char* a = strtok(nullptr, " ");
+                char* b = strtok(nullptr, " ");
+                if (!a || !b) { Debug.println("ERR: PARAMS_EXT <period_ms> <alpha_d>"); return; }
+                pidController.periodMs = (uint16_t)constrain(atof(a), 20.0f, 500.0f);
+                pidController.alphaD   = constrain((float)atof(b), 0.05f, 1.0f);
+                Debug.printf("OK PARAMS_EXT period=%u alpha=%.3f\n",
+                              pidController.periodMs, pidController.alphaD);
+            } else if (strcmp(tok, "SYRINGE_SET") == 0) {
+                char* a = strtok(nullptr, " ");
+                char* b = strtok(nullptr, " ");
+                if (!a || !b) { Debug.println("ERR: SYRINGE_SET <u_norm> <dur_s>"); return; }
+                runSyringeSet(atof(a), atof(b));
+            } else if (strcmp(tok, "PID_HOLD") == 0) {
+                char* a = strtok(nullptr, " ");
+                char* b = strtok(nullptr, " ");
+                if (!a || !b) { Debug.println("ERR: PID_HOLD <depth_m> <dur_s>"); return; }
+                runPidHold(atof(a), atof(b));
+            } else if (strcmp(tok, "PID_STEP") == 0) {
+                char* a = strtok(nullptr, " ");
+                if (!a) { Debug.println("ERR: PID_STEP <depth_m>"); return; }
+                runPidStep(atof(a));
+            } else if (strcmp(tok, "SURFACE_OFFSET") == 0) {
+                char* a = strtok(nullptr, " ");
+                if (!a) { Debug.println("ERR: SURFACE_OFFSET <m>"); return; }
+                sensors.setSurfaceTargetOffset(atof(a));
+                Debug.printf("OK SURFACE_OFFSET %.3f m\n", sensors.surfaceTargetOffset());
+            } else {
+                Debug.printf("ERR: unknown cmd '%s'\n", tok);
+            }
+            return;
+        }
+        if (g_serialLineBuf.length() < 95) g_serialLineBuf += c;
+    }
+}
+
+// Comanda direttamente la siringa a u in [0,1] e logga la profondità per
+// caratterizzare la dinamica del float (costanti di tempo, guadagno DC).
+// Bypassa il PID: utile per stimare guadagni iniziali.
+static void runSyringeSet(float uNorm, float durationS) {
+    uNorm = constrain(uNorm, 0.0f, 1.0f);
+    if (durationS < 0.5f || durationS > 300.0f) {
+        Debug.println("ERR: durationS in [0.5, 300]");
+        return;
+    }
+    const long posTarget = uToMotorPos(uNorm);
+
+    Debug.printf("# SYRINGE_SET u=%.3f target_steps=%ld dur=%.1fs\n",
+                  uNorm, posTarget, durationS);
+    Debug.println("# t_ms,depth_m,motor_pos");
+    motor.enableOutputs();
+    motor.startMoveTo(posTarget);
+
+    const unsigned long t0 = millis();
+    unsigned long lastLog = 0;
+    while (millis() - t0 < (unsigned long)(durationS * 1000.0f)) {
+        if (Serial.available()) { Debug.println("# aborted"); break; }
+        if (millis() - lastLog >= 100) {
+            lastLog = millis();
+            sensors.read();
+            Debug.printf("%lu,%.3f,%ld\n",
+                          millis() - t0, sensors.depth(), motor.position());
+        }
+        ledController.update();
+        yield();
+    }
+    motor.stop();
+    motor.disableOutputs();
+    Debug.println("# done");
+}
+
+// Hold PID a quota fissa per N secondi, log a 5 Hz con CSV completo.
+// Versione "tarable" di un profile PID phase, senza pre-position né hold check.
+static void runPidHold(float depthTarget, float durationS) {
+    if (depthTarget < 0.1f || depthTarget > 5.0f) {
+        Debug.println("ERR: depthTarget in [0.1, 5.0] m");
+        return;
+    }
+    if (durationS < 1.0f || durationS > 600.0f) {
+        Debug.println("ERR: durationS in [1, 600]");
+        return;
+    }
+
+    Debug.printf("# PID_HOLD target=%.3fm dur=%.1fs Kp=%.4f Ki=%.4f Kd=%.4f "
+                  "period=%u alpha=%.3f\n",
+                  depthTarget, durationS,
+                  pidController.Kp, pidController.Ki, pidController.Kd,
+                  pidController.periodMs, pidController.alphaD);
+    Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
+
+    pidController.reset();
+    motor.enableOutputs();
+
+    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
+    const long deadbandSteps = (long)(PID_MIN_RETARGET_FRAC * (float)usable);
+    long lastCommandedTarget = motor.position();
+
+    const unsigned long t0 = millis();
+    unsigned long lastTick = 0;
+    unsigned long lastLog  = 0;
+    while (millis() - t0 < (unsigned long)(durationS * 1000.0f)) {
+        if (Serial.available()) { Debug.println("# aborted"); break; }
+        if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
+
+        if (millis() - lastTick >= pidController.periodMs) {
+            lastTick = millis();
+            sensors.read();
+            const float depth = sensors.depth();
+            const float u = pidController.computeNormalized(depthTarget, depth);
+            const long posTarget = uToMotorPos(u);
+            if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
+                motor.startMoveTo(posTarget);
+                lastCommandedTarget = posTarget;
+            }
+            if (millis() - lastLog >= 200) {
+                lastLog = millis();
+                Debug.printf("%lu,%.3f,%.3f,%.3f,%.3f,%ld\n",
+                              millis() - t0, depth, depthTarget,
+                              depthTarget - depth, u, motor.position());
+            }
+        }
+        ledController.update();
+        yield();
+    }
+    motor.stop();
+    motor.disableOutputs();
+    Debug.println("# done");
+}
+
+// Step response: cambio istantaneo del setpoint, esci a 60 s.
+// Identico a PID_HOLD ma con durata fissa e log a 10 Hz per catturare la rampa.
+static void runPidStep(float depthTarget) {
+    if (depthTarget < 0.1f || depthTarget > 5.0f) {
+        Debug.println("ERR: depthTarget in [0.1, 5.0] m");
+        return;
+    }
+    Debug.printf("# PID_STEP target=%.3fm Kp=%.4f Ki=%.4f Kd=%.4f "
+                  "period=%u alpha=%.3f\n",
+                  depthTarget,
+                  pidController.Kp, pidController.Ki, pidController.Kd,
+                  pidController.periodMs, pidController.alphaD);
+    Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
+
+    pidController.reset();
+    motor.enableOutputs();
+
+    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
+    const long deadbandSteps = (long)(PID_MIN_RETARGET_FRAC * (float)usable);
+    long lastCommandedTarget = motor.position();
+
+    const unsigned long t0 = millis();
+    unsigned long lastTick = 0;
+    unsigned long lastLog  = 0;
+    while (millis() - t0 < 60000UL) {
+        if (Serial.available()) { Debug.println("# aborted"); break; }
+        if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
+
+        if (millis() - lastTick >= pidController.periodMs) {
+            lastTick = millis();
+            sensors.read();
+            const float depth = sensors.depth();
+            const float u = pidController.computeNormalized(depthTarget, depth);
+            const long posTarget = uToMotorPos(u);
+            if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
+                motor.startMoveTo(posTarget);
+                lastCommandedTarget = posTarget;
+            }
+            if (millis() - lastLog >= 100) {
+                lastLog = millis();
+                Debug.printf("%lu,%.3f,%.3f,%.3f,%.3f,%ld\n",
+                              millis() - t0, depth, depthTarget,
+                              depthTarget - depth, u, motor.position());
+            }
+        }
+        ledController.update();
+        yield();
+    }
+    motor.stop();
+    motor.disableOutputs();
+    Debug.println("# done");
 }

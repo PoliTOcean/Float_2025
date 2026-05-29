@@ -7,6 +7,9 @@
 /*
  *******************************************************************************
  * comms.cpp
+ * ESP-NOW peer-to-peer messaging between ESPA and ESPB, plus the OTA update
+ * window (ElegantOTA over a temporary WiFi access point).
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

@@ -5,6 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ *******************************************************************************
+ * espb_bridge_core.cpp
+ * Pure-logic implementation of the ESPB bridge: GUI command string parsing
+ * (table-driven), parameter extraction, and STATUS line formatting. No
+ * hardware or framework dependencies, to remain unit-testable.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
+ *******************************************************************************
+ */
+
 namespace {
 constexpr size_t COMMAND_BUFFER_SIZE = 96;
 
@@ -22,6 +32,11 @@ constexpr EspbProtocolCommand PROTOCOL_COMMANDS[] = {
     {"DEBUG", CMD_DEBUG_MODE, CMD11_ACK},
     {"HOME_MOTOR", CMD_HOME, CMD12_ACK},
     {"STOP", CMD_STOP, CMD13_ACK},
+    {"PARAMS_EXT", CMD_UPDATE_PID_EXT, CMD14_ACK},
+    {"SYRINGE_SET", CMD_SYRINGE_SET, CMD15_ACK},
+    {"PID_HOLD", CMD_PID_HOLD, CMD16_ACK},
+    {"PID_STEP", CMD_PID_STEP, CMD17_ACK},
+    {"SURFACE_OFFSET", CMD_SET_SURFACE_OFFSET, CMD18_ACK},
 };
 
 void zeroMessage(output_message& message) {
@@ -131,6 +146,83 @@ EspbParsedCommand espbParseSerialCommand(const char* line) {
         return parsed;
     }
 
+    if (strcmp(token, "PARAMS_EXT") == 0) {
+        // PARAMS_EXT period_ms alpha_d   (third param reserved, always 0)
+        float periodMs = 0.0f;
+        float alphaD   = 0.0f;
+        if (!parseFloatToken(strtok(nullptr, " "), periodMs) ||
+            !parseFloatToken(strtok(nullptr, " "), alphaD) ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+
+        parsed = makeForwardCommand(CMD_UPDATE_PID_EXT);
+        parsed.message.params[0] = periodMs;
+        parsed.message.params[1] = alphaD;
+        parsed.message.params[2] = 0.0f;
+        return parsed;
+    }
+
+    if (strcmp(token, "SYRINGE_SET") == 0) {
+        // SYRINGE_SET <u_norm> <duration_s>
+        float u = 0.0f;
+        float dur = 0.0f;
+        if (!parseFloatToken(strtok(nullptr, " "), u) ||
+            !parseFloatToken(strtok(nullptr, " "), dur) ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+        parsed = makeForwardCommand(CMD_SYRINGE_SET);
+        parsed.message.params[0] = u;
+        parsed.message.params[1] = dur;
+        parsed.message.params[2] = 0.0f;
+        return parsed;
+    }
+
+    if (strcmp(token, "PID_HOLD") == 0) {
+        // PID_HOLD <depth_m> <duration_s>
+        float depth = 0.0f;
+        float dur = 0.0f;
+        if (!parseFloatToken(strtok(nullptr, " "), depth) ||
+            !parseFloatToken(strtok(nullptr, " "), dur) ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+        parsed = makeForwardCommand(CMD_PID_HOLD);
+        parsed.message.params[0] = depth;
+        parsed.message.params[1] = dur;
+        parsed.message.params[2] = 0.0f;
+        return parsed;
+    }
+
+    if (strcmp(token, "PID_STEP") == 0) {
+        // PID_STEP <depth_m>
+        float depth = 0.0f;
+        if (!parseFloatToken(strtok(nullptr, " "), depth) ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+        parsed = makeForwardCommand(CMD_PID_STEP);
+        parsed.message.params[0] = depth;
+        parsed.message.params[1] = 0.0f;
+        parsed.message.params[2] = 0.0f;
+        return parsed;
+    }
+
+    if (strcmp(token, "SURFACE_OFFSET") == 0) {
+        // SURFACE_OFFSET <metres>
+        float offset = 0.0f;
+        if (!parseFloatToken(strtok(nullptr, " "), offset) ||
+            !hasNoExtraToken()) {
+            return parsed;
+        }
+        parsed = makeForwardCommand(CMD_SET_SURFACE_OFFSET);
+        parsed.message.params[0] = offset;
+        parsed.message.params[1] = 0.0f;
+        parsed.message.params[2] = 0.0f;
+        return parsed;
+    }
+
     if (strcmp(token, "TEST_FREQ") == 0) {
         long freq = 0;
         if (!parseLongToken(strtok(nullptr, " "), freq) ||
@@ -160,8 +252,13 @@ EspbParsedCommand espbParseSerialCommand(const char* line) {
     for (const EspbProtocolCommand& command : PROTOCOL_COMMANDS) {
         if (strcmp(token, command.commandText) == 0) {
             if (command.commandCode == CMD_UPDATE_PID ||
+                command.commandCode == CMD_UPDATE_PID_EXT ||
                 command.commandCode == CMD_SET_SPEED ||
                 command.commandCode == CMD_TEST_STEPS ||
+                command.commandCode == CMD_SYRINGE_SET ||
+                command.commandCode == CMD_PID_HOLD ||
+                command.commandCode == CMD_PID_STEP ||
+                command.commandCode == CMD_SET_SURFACE_OFFSET ||
                 !hasNoExtraToken()) {
                 return parsed;
             }

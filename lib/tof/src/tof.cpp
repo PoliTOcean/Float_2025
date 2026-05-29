@@ -2,6 +2,16 @@
 
 #include "config.h"
 
+/*
+ *******************************************************************************
+ * tof.cpp
+ * VL53L7CX multi-zone TOF driver wrapper. Initializes the sensor in 4x4 mode,
+ * aggregates the configured zone mask into a single distance by taking the
+ * minimum valid range, and applies the configured raw offset.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
+ *******************************************************************************
+ */
+
 TofSensor::TofSensor(TwoWire& wire, uint8_t lpnPin, uint8_t gpio1Pin)
     : _wire(wire),
       _lpnPin(lpnPin),

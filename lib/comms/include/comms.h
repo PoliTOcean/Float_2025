@@ -11,6 +11,7 @@
  *******************************************************************************
  * comms.h
  * ESP-NOW communication and OTA firmware update management.
+ * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
 

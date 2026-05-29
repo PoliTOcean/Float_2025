@@ -4,7 +4,8 @@
 *
 * Filename: main.cpp (formerly espB.ino)
 * Version: 10.0.0
-* Developers: Fachechi Gino Marco, Gullotta Salvatore
+* Maintainers: Colabella Davide, Benevenga Filippo
+* Past contributors: Fachechi Gino Marco, Gullotta Salvatore
 * Company: Team PoliTOcean @ Politecnico di Torino
 * Arduino board package: esp32 by Espressif Systems, v2.0.17
 *
