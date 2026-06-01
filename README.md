@@ -827,6 +827,6 @@ Recent changes:
 - Motor geometry: home = `motor_pos = 0`, empty syringes, floats; increasing `u` maps to negative motor positions, fills the syringes, and sinks. `motorPosToU()` is logged as `syringe_u`.
 - TOF safety range widened to `[40, 85] mm` to give 10 mm of margin above the homing threshold without risking the mechanical end stop.
 - `balance` now refuses to start without a prior homing (was forcing `pos = 0` as a fallback, mechanically risky).
-- Runtime profile, PID, balance, and motor settings are configurable from NEXUS/GUI and persisted on ESPA; the old `espA_pool` build and `POOL_TEST_PROFILE` flag have been removed.
+- Runtime profile, PID, balance, and motor settings are configurable from NEXUS/GUI and persisted on ESPA.
 **Team Contact:** PoliTOcean @ Politecnico di Torino
 **Maintainers:** Colabella Davide, Benevenga Filippo
