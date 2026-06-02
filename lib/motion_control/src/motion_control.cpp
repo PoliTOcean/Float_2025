@@ -5,6 +5,7 @@
 #include "comms.h"
 #include "DebugSerial.h"
 #include "runtime_config.h"
+#include "flash_storage.h"
 
 /*
  *******************************************************************************
@@ -25,11 +26,37 @@ void MotionController::clearEmergencyStop() {
 }
 
 void MotionController::emergencyStop(const char* reason) {
+    // Guard di idempotenza: emergencyStop() può essere richiamato durante un
+    // emergency stop già attivo. Logghiamo (e fermiamo) una sola volta.
+    const bool firstTrigger = !_emergencyStop;
+
     _emergencyStop = true;
+    _lastStopReason = reason;
     _motor.stop();
     _motor.disableOutputs();
     Debug.printf("Motor emergency stop: %s\n", reason);
     ledController.setState(LEDState::ERROR);
+
+    if (!firstTrigger) {
+        return;
+    }
+
+    // Registra l'evento sul flash NELL'ISTANTE in cui scatta, non a posteriori:
+    // il vecchio approccio (blocco "aborted" in loop()) mancava lo stop se
+    // measure() usciva per timeout di fase invece che per emergency stop, o se
+    // l'auto-recovery azzerava lo stop prima del check. Qui è impossibile
+    // mancarlo. Scrittura singola (firstTrigger) → nessun rischio di append
+    // ripetuti. reason e tof esistono solo qui: in piscina la USB è scollegata.
+    sensors.read();
+    char phase[64];
+    snprintf(phase, sizeof(phase), "emergency_stop:%s tof=%.1fmm",
+             reason, _lastStopTofMm);
+    flashStorage.appendRecord(COMPANY_NUMBER, 0,
+                              static_cast<float>(millis()) / 1000.0f,
+                              sensors.pressure() / 1000.0f,
+                              sensors.depth(), phase,
+                              sensors.sensorDepth(),
+                              motorPosToU(_motor.position()));
 }
 
 void MotionController::serviceEmergencyStop() {
@@ -112,21 +139,37 @@ bool MotionController::tofMaxExtensionStopReached(unsigned long nowMs,
         return false;
     }
 
-    if (distanceMm < TOF_SAFE_RANGE_MIN_MM) {
+    const bool tooClose = distanceMm < TOF_SAFE_RANGE_MIN_MM;
+    const bool tooFar   = distanceMm > TOF_SAFE_RANGE_MAX_MM;
+
+    if (!tooClose && !tooFar) {
+        // Lettura valida: azzera la conferma in corso (un glitch isolato non
+        // deve accumularsi nel tempo).
+        _tofOutOfRangeCount = 0;
+        return false;
+    }
+
+    // Lettura fuori range: conferma prima di fermare, per ignorare glitch
+    // singoli (bolle, riflessi, torbidità) tipici del TOF in acqua.
+    if (++_tofOutOfRangeCount < TOF_SAFETY_STOP_SAMPLES) {
+        Debug.printf("%s: TOF out of range (%.1f mm), sample %u/%u\n",
+                     context, distanceMm,
+                     _tofOutOfRangeCount, TOF_SAFETY_STOP_SAMPLES);
+        return false;
+    }
+
+    _tofOutOfRangeCount = 0;
+    _lastStopTofMm = distanceMm;
+    if (tooClose) {
         Debug.printf("%s: TOF safety stop, too close (%.1f < %.1f mm)\n",
                      context, distanceMm, TOF_SAFE_RANGE_MIN_MM);
         emergencyStop("TOF below safe range");
-        return true;
-    }
-
-    if (distanceMm > TOF_SAFE_RANGE_MAX_MM) {
+    } else {
         Debug.printf("%s: TOF safety stop, too far (%.1f > %.1f mm)\n",
                      context, distanceMm, TOF_SAFE_RANGE_MAX_MM);
         emergencyStop("TOF above safe range");
-        return true;
     }
-
-    return false;
+    return true;
 }
 
 bool MotionController::pressureStopReached(float stopPressureKpa,
@@ -430,6 +473,7 @@ bool MotionController::moveToMax(uint32_t timeoutMs,
             if (distanceMm > TOF_SAFE_RANGE_MAX_MM) {
                 Debug.printf("moveToMax: TOF safety stop, too far (%.1f > %.1f mm)\n",
                              distanceMm, TOF_SAFE_RANGE_MAX_MM);
+                _lastStopTofMm = distanceMm;
                 emergencyStop("TOF above safe range");
                 return false;
             }

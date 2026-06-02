@@ -30,10 +30,22 @@ public:
     void serviceEmergencyStop();
     bool remoteStopRequested();
 
+    // Diagnostica dell'ultimo emergency stop, per loggarla nel flash CSV: il
+    // reason è stampato solo su Serial in tempo reale, ma in piscina la USB è
+    // scollegata, quindi va salvato. _lastStopTofMm vale -1 se lo stop non è
+    // stato causato dal TOF (timeout, remote stop, ...).
+    const char* lastStopReason() const { return _lastStopReason; }
+    float lastStopTofMm() const { return _lastStopTofMm; }
+
 private:
     MotorController& _motor;
     TofSensor& _tof;
     bool _emergencyStop = false;
+    const char* _lastStopReason = "";
+    float _lastStopTofMm = -1.0f;
+    // Letture TOF consecutive fuori range: un emergency stop scatta solo dopo
+    // TOF_SAFETY_STOP_SAMPLES conferme, per ignorare glitch singoli in acqua.
+    uint8_t _tofOutOfRangeCount = 0;
 
     float readPressureKpa();
     bool tofMaxExtensionStopReached(unsigned long nowMs,

@@ -167,6 +167,10 @@ void ProfileManager::_applyConfigToSubsystems() {
 void ProfileManager::resetEEPROM() {
     _writePtr = 0;
     _readPtr  = 0;
+    // Azzera il flash log all'inizio di una nuova missione: non più al boot,
+    // così il log di un test fallito sopravvive al power-cycle ed è leggibile
+    // con DUMP_LOG finché non si avvia un nuovo profilo.
+    flashStorage.clearLog();
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +382,12 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         // Output PID = posizione assoluta della siringa, frazione di corsa in [0, 1].
         // Comando motore NON bloccante: startMoveTo aggiorna il target di FastAccelStepper
         // al volo, anche se il motore sta ancora viaggiando dal tick precedente.
-        const float u = pidController.computeNormalized(targetDepth, currentDepth);
+        // Clamp dell'output PID a [PID_U_MIN, PID_U_MAX]: tiene la siringa
+        // lontana dagli estremi meccanici che coincidono con le soglie TOF,
+        // così il controllo non si auto-ferma in emergency stop al limite.
+        const float u = constrain(
+            pidController.computeNormalized(targetDepth, currentDepth),
+            PID_U_MIN, PID_U_MAX);
         const long usableSteps =
             (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
         const long posTarget = uToMotorPos(u);

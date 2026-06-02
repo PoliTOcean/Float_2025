@@ -105,12 +105,21 @@ void setup() {
     profileManager.beginConfig();
 
     // --- Internal flash mission log ---
+    // LittleFS è persistente al ciclo di alimentazione: al boot il log della
+    // sessione precedente è ancora presente. Lo dumpiamo qui su Serial come
+    // comodità (se il monitor è già connesso), ma NON lo azzeriamo: dopo un
+    // test fallito spesso il monitor si collega in ritardo, quindi il log deve
+    // sopravvivere al power-cycle e restare leggibile con il comando DUMP_LOG.
+    // L'azzeramento avviene solo all'inizio di una nuova missione (resetEEPROM)
+    // o su comando esplicito (CMD_CLEAR_EEPROM). Stampa diretta su Serial (non
+    // Debug) per un CSV pulito, indipendente da debug_mode_active.
     if (flashStorage.begin()) {
-        if (!flashStorage.clearLog()) {
-            Debug.println("WARNING: flash log reset failed");
-        } else {
-            Debug.println("Flash log ready");
+        Serial.println("===== FLASH LOG DUMP (previous session) BEGIN =====");
+        if (!flashStorage.printLogTo(Serial)) {
+            Serial.println("(no previous log or flash unavailable)");
         }
+        Serial.println("===== FLASH LOG DUMP END =====");
+        Debug.println("Flash log ready (use DUMP_LOG to re-read)");
     } else {
         Debug.println("WARNING: flash log unavailable; stored data disabled");
     }
@@ -224,11 +233,21 @@ void loop() {
     {
         bool ack = g_autoCommitted ? true : comms.sendMessage(CMD1_ACK, 1000);
 
+        // Il comando GO resta inchiodato in _received perché sott'acqua non
+        // arrivano nuovi pacchetti: lo consumiamo subito così non riparte da
+        // solo al ritorno in IDLE e non dipendiamo da g_idle per il clear.
+        comms.clearCommand();
+
+        // true se un profilo è stato interrotto da emergency stop (es. safety
+        // TOF): serve a decidere se tentare l'auto-recovery a fine missione.
+        bool aborted = false;
+        // Dichiarato qui (scope esterno) perché serve anche al blocco aborted.
+        uint8_t completedProfiles = 0;
+
         if (ack && motionController.motionAllowed()) {
             const RuntimeProfileConfig& profileConfig = profileManager.config();
             Debug.println("Mission: starting vertical profiles");
 
-            uint8_t completedProfiles = 0;
             profileManager.resetEEPROM();
             profileManager.logDeploymentPacket();
 
@@ -240,6 +259,7 @@ void loop() {
                                        profileConfig.holdTimeS,
                                        profileConfig.pidTimeoutS);
                 if (!motionController.motionAllowed()) {
+                    aborted = true;
                     break;
                 }
 
@@ -251,6 +271,7 @@ void loop() {
                                        profileConfig.holdTimeS,
                                        profileConfig.ascentTimeoutS);
                 if (!motionController.motionAllowed()) {
+                    aborted = true;
                     break;
                 }
 
@@ -262,6 +283,24 @@ void loop() {
 
             if (g_autoCommitted && completedProfiles >= profileConfig.profileCount) {
                 g_autoMissionDone = true;
+            }
+        }
+
+        // Auto-recovery: senza telemetria, un emergency stop lascerebbe il
+        // float bloccato sul fondo col LED rosso e ogni comando successivo
+        // rifiutato da motionAllowed(). Logghiamo l'evento per il post-mortem
+        // e tentiamo un homing, che cancella l'emergency stop e riporta la
+        // siringa in posizione nota (galleggiamento), così il float risale e
+        // resta pronto per un nuovo GO.
+        if (aborted) {
+            Debug.println("Profile aborted by emergency stop — attempting auto-recovery");
+            // Il record emergency_stop (reason + tof) è già stato scritto sul
+            // flash da emergencyStop() nell'istante dello stop: qui non serve
+            // ri-loggare. Tentiamo solo l'auto-recovery.
+            if (motionController.homeWithTof()) {
+                Debug.println("Auto-recovery homing complete — float ready");
+            } else {
+                Debug.println("Auto-recovery homing FAILED — float remains in error");
             }
         }
 
@@ -651,6 +690,15 @@ static void servicePidTuningSerial() {
                 if (!a) { Debug.println("ERR: SURFACE_OFFSET <m>"); return; }
                 sensors.setSurfaceTargetOffset(atof(a));
                 Debug.printf("OK SURFACE_OFFSET %.3f m\n", sensors.surfaceTargetOffset());
+            } else if (strcmp(tok, "DUMP_LOG") == 0) {
+                // Dump del flash log su richiesta: risolve il caso in cui il
+                // serial monitor si collega dopo il dump automatico nel setup().
+                // NON azzera il log, così può essere riletto più volte.
+                Serial.println("===== FLASH LOG DUMP (on demand) BEGIN =====");
+                if (!flashStorage.printLogTo(Serial)) {
+                    Serial.println("(no log or flash unavailable)");
+                }
+                Serial.println("===== FLASH LOG DUMP END =====");
             } else {
                 Debug.printf("ERR: unknown cmd '%s'\n", tok);
             }

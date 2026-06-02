@@ -83,6 +83,22 @@ constexpr float    TOF_HOMING_THRESHOLD     = 75.0f; // Homing stop distance: st
 constexpr float    TOF_HOMING_APPROACH_MM   = 50.0f; // Approach phase: move toward TOF until reading BELOW this, then start homing (mm)
 constexpr float    TOF_SAFE_RANGE_MIN_MM    = 40.0f; // Safety range lower bound: siringa estesa, troppo vicina al TOF (mm)
 constexpr float    TOF_SAFE_RANGE_MAX_MM    = 85.0f; // Safety range upper bound: siringa retratta, troppo lontana dal TOF (mm). 10 mm sopra TOF_HOMING_THRESHOLD per coprire il rumore TOF post-homing senza spingere il pistone a sbattere meccanicamente.
+// Soglia (numero di letture TOF consecutive fuori range) prima di scatenare un
+// emergency stop durante un movimento. Un singolo campione fuori soglia in
+// acqua (bolle, riflessi, torbidità) non deve fermare la missione: serve una
+// conferma. Stesso pattern del pressure-stop del balance.
+constexpr uint8_t  TOF_SAFETY_STOP_SAMPLES  = 3;
+// Range PID utile: limitiamo l'output u del PID a [MIN, MAX] (anziché [0,1])
+// così la siringa non raggiunge mai gli estremi meccanici che coincidono con
+// le soglie TOF di sicurezza (40/85 mm), lasciando margine contro passi persi
+// e rumore. La corsa motore (~35 mm) entra nella finestra TOF (~45 mm) ma con
+// poco margine agli estremi: questo clamp lo recupera.
+// PID_U_MIN=0 così il PID può svuotare completamente la siringa per risalire
+// (un MIN>0 lasciava il float troppo galleggiante e nascondeva la dinamica
+// reale agli u bassi). Il MAX resta sotto 1.0 per margine verso la soglia TOF
+// in piena estensione.
+constexpr float    PID_U_MIN                = 0.0f;
+constexpr float    PID_U_MAX                = 0.92f;
 
 // ---------------------------------------------------------------------------
 // BALANCE / PURGE CONTROL
