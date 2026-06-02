@@ -258,10 +258,9 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         pidController.reset();
         if (isDeepTarget) {
             // Pre-position syringe to kick-start the deep descent only.
-            // u=0.979 → siringa quasi piena → spinta iniziale per "affondare".
-            // MOTOR_INVERT_LOGICAL=false: uToMotorPos mappa direttamente la
-            // convenzione logica sulla geometria nativa.
-            motionController.moveToWithTimeout(uToMotorPos(0.979f), 0);
+            // PID_DESCENT_KICK_U → spinta iniziale per "affondare", contenuta
+            // per non far superare il target prima che il PID prenda il controllo.
+            motionController.moveToWithTimeout(uToMotorPos(PID_DESCENT_KICK_U), 0);
         }
     } else {
         ledController.setState(LEDState::PROFILE);
@@ -275,9 +274,9 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     float         lastDepth      = 0.0f;
     int           stableCount    = 0;
     // Per la fase PID: ultimo target assoluto comandato al motore (in step).
-    // Inizializzato al pre-position (u=0.979) per isDeepTarget, altrimenti alla
-    // posizione corrente — letta dopo il primo sensors.read() qui sotto.
-    long          lastCommandedTarget = isDeepTarget ? uToMotorPos(0.979f) : motor.position();
+    // Inizializzato al pre-position (PID_DESCENT_KICK_U) per isDeepTarget,
+    // altrimenti alla posizione corrente — letta dopo il primo sensors.read().
+    long          lastCommandedTarget = isDeepTarget ? uToMotorPos(PID_DESCENT_KICK_U) : motor.position();
 
     // -----------------------------------------------------------------------
     while (true) {

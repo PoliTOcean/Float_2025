@@ -124,13 +124,25 @@ constexpr uint16_t DATA_PACKET_PERIOD_MS = 5000; // Packet cadence shown to judg
 // metro di errore", portabili tra siringhe — se cambia MOTOR_MAX_STEPS, i
 // guadagni restano validi.
 constexpr uint16_t PID_PERIOD_DEFAULT_MS  = 50;    // Default tick PID (ms)
-constexpr float    PID_KP_DEFAULT         = 0.17f; // frazione_corsa / m
+// Tuning iterato sui test in piscina:
+//  - Kp=0.17 (originale): troppo debole, il float non si muoveva (u≈0.03).
+//  - Kp=2.0 Kd=0.13: il float si muoveva ma OSCILLAVA (±15cm, pompaggio) —
+//    Kp troppo alto e Kd insufficiente per un sistema lento come il float.
+//  - Kp=1.0 Kd=0.5 (attuale): dimezza l'aggressività e aumenta lo smorzamento
+//    per fermare l'oscillazione. Ki=0 finché P/D non sono stabili (l'integrale
+//    peggiora il pompaggio). Affinare ancora a runtime con PID_CONFIG_SET.
+constexpr float    PID_KP_DEFAULT         = 1.0f;  // frazione_corsa / m
 constexpr float    PID_KI_DEFAULT         = 0.0f;  // frazione_corsa / (m·s)
-constexpr float    PID_KD_DEFAULT         = 0.13f; // frazione_corsa / (m/s)
+constexpr float    PID_KD_DEFAULT         = 0.5f;  // frazione_corsa / (m/s)
 constexpr float    PID_INTEGRAL_LIMIT     = 5.0f;  // m·s (bound conservativo)
 constexpr float    PID_ALPHA_D_DEFAULT    = 0.25f; // LPF IIR coeff per derivata
 constexpr float    PID_U_NEUTRAL          = 0.011f;// kick-start offset (~500/47100)
 constexpr float    PID_MIN_RETARGET_FRAC  = 0.001f;// dead-band ri-comando (frazione corsa)
+// Pre-posizionamento siringa all'inizio della discesa PID (kick-start): u alto
+// per avviare l'affondamento. Era 0.979 (siringa quasi piena) ma faceva tirare
+// il float dritto fino al fondo prima che il PID frenasse (overshoot ~26cm in
+// vasca). Ridotto per avviare la discesa senza superare il target.
+constexpr float    PID_DESCENT_KICK_U     = 0.30f;
 
 // ---------------------------------------------------------------------------
 // FLOAT PHYSICAL / MISSION CONSTANTS
