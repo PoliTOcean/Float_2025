@@ -128,12 +128,13 @@ constexpr uint16_t PID_PERIOD_DEFAULT_MS  = 50;    // Default tick PID (ms)
 //  - Kp=0.17 (originale): troppo debole, il float non si muoveva (u≈0.03).
 //  - Kp=2.0 Kd=0.13: il float si muoveva ma OSCILLAVA (±15cm, pompaggio) —
 //    Kp troppo alto e Kd insufficiente per un sistema lento come il float.
-//  - Kp=1.0 Kd=0.5 (attuale): dimezza l'aggressività e aumenta lo smorzamento
-//    per fermare l'oscillazione. Ki=0 finché P/D non sono stabili (l'integrale
-//    peggiora il pompaggio). Affinare ancora a runtime con PID_CONFIG_SET.
-constexpr float    PID_KP_DEFAULT         = 1.0f;  // frazione_corsa / m
-constexpr float    PID_KI_DEFAULT         = 0.0f;  // frazione_corsa / (m·s)
-constexpr float    PID_KD_DEFAULT         = 0.5f;  // frazione_corsa / (m/s)
+//  - Kp=1.0 Kd=0.5: smorzato ma si "sedeva" in superficie (ripresa debole).
+//  - Kp=1.7 Ki=0.1 Kd=0.3 (attuale): converge sul target con oscillazione
+//    finale ±1cm. Il Ki vince l'offset di galleggiamento (ripresa), Kd smorza.
+//    Affinare ancora a runtime con PID_CONFIG_SET se serve.
+constexpr float    PID_KP_DEFAULT         = 1.7f;  // frazione_corsa / m
+constexpr float    PID_KI_DEFAULT         = 0.1f;  // frazione_corsa / (m·s)
+constexpr float    PID_KD_DEFAULT         = 0.3f;  // frazione_corsa / (m/s)
 constexpr float    PID_INTEGRAL_LIMIT     = 5.0f;  // m·s (bound conservativo)
 constexpr float    PID_ALPHA_D_DEFAULT    = 0.25f; // LPF IIR coeff per derivata
 constexpr float    PID_U_NEUTRAL          = 0.011f;// kick-start offset (~500/47100)
