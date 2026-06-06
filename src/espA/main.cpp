@@ -727,8 +727,19 @@ static void runSyringeSet(float uNorm, float durationS) {
 
     const unsigned long t0 = millis();
     unsigned long lastLog = 0;
+    unsigned long lastTofSampleMs = 0;
     while (millis() - t0 < (unsigned long)(durationS * 1000.0f)) {
         if (Serial.available()) { Debug.println("# aborted"); break; }
+        // Supervisione TOF su ogni movimento: fondo corsa esteso (tappo) = stop
+        // pulito; oltre il limite superiore = emergency (già scattato dentro).
+        const TofGuard guard = motionController.tofGuard(millis(), lastTofSampleMs, "syringe");
+        if (guard == TofGuard::ExtendLimit) {
+            motor.stop();
+            Debug.println("# extension limit (TOF)");
+        } else if (guard == TofGuard::Emergency) {
+            Debug.println("# aborted (TOF)");
+            break;
+        }
         if (millis() - lastLog >= 100) {
             lastLog = millis();
             sensors.read();
@@ -772,9 +783,26 @@ static void runPidHold(float depthTarget, float durationS) {
     const unsigned long t0 = millis();
     unsigned long lastTick = 0;
     unsigned long lastLog  = 0;
+    unsigned long lastTofSampleMs = 0;
+    bool atExtensionLimit = false;  // pistone fermo al fondo corsa (tappo): non ricomandare verso l'estensione
     while (millis() - t0 < (unsigned long)(durationS * 1000.0f)) {
         if (Serial.available()) { Debug.println("# aborted"); break; }
         if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
+
+        // Supervisione TOF su ogni movimento. ExtendLimit = saturazione normale a
+        // piena estensione: NON aborte, ferma e inibisce ulteriore estensione
+        // finché il PID non chiede di risalire. Emergency = anomalia → abort.
+        const TofGuard guard = motionController.tofGuard(millis(), lastTofSampleMs, "pid");
+        if (guard == TofGuard::ExtendLimit) {
+            if (!atExtensionLimit) {
+                motor.stop();
+                lastCommandedTarget = motor.position();
+                atExtensionLimit = true;
+            }
+        } else if (guard == TofGuard::Emergency) {
+            Debug.println("# aborted (TOF)");
+            break;
+        }
 
         if (millis() - lastTick >= pidController.periodMs) {
             lastTick = millis();
@@ -782,9 +810,15 @@ static void runPidHold(float depthTarget, float durationS) {
             const float depth = sensors.depth();
             const float u = pidController.computeNormalized(depthTarget, depth);
             const long posTarget = uToMotorPos(u);
-            if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
+            // In saturazione al fondo corsa accetta solo target che fanno
+            // RISALIRE (verso home = pos più alta); ignora richieste di ulteriore
+            // estensione, che riaprirebbero il tappo.
+            const bool retreating = posTarget > motor.position();
+            if ((!atExtensionLimit || retreating) &&
+                labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
                 motor.startMoveTo(posTarget);
                 lastCommandedTarget = posTarget;
+                atExtensionLimit = false;
             }
             if (millis() - lastLog >= 200) {
                 lastLog = millis();
@@ -825,9 +859,24 @@ static void runPidStep(float depthTarget) {
     const unsigned long t0 = millis();
     unsigned long lastTick = 0;
     unsigned long lastLog  = 0;
+    unsigned long lastTofSampleMs = 0;
+    bool atExtensionLimit = false;  // pistone fermo al fondo corsa (tappo): non ricomandare verso l'estensione
     while (millis() - t0 < 60000UL) {
         if (Serial.available()) { Debug.println("# aborted"); break; }
         if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
+
+        // Supervisione TOF su ogni movimento (vedi runPidHold per la semantica).
+        const TofGuard guard = motionController.tofGuard(millis(), lastTofSampleMs, "pid");
+        if (guard == TofGuard::ExtendLimit) {
+            if (!atExtensionLimit) {
+                motor.stop();
+                lastCommandedTarget = motor.position();
+                atExtensionLimit = true;
+            }
+        } else if (guard == TofGuard::Emergency) {
+            Debug.println("# aborted (TOF)");
+            break;
+        }
 
         if (millis() - lastTick >= pidController.periodMs) {
             lastTick = millis();
@@ -835,9 +884,12 @@ static void runPidStep(float depthTarget) {
             const float depth = sensors.depth();
             const float u = pidController.computeNormalized(depthTarget, depth);
             const long posTarget = uToMotorPos(u);
-            if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
+            const bool retreating = posTarget > motor.position();
+            if ((!atExtensionLimit || retreating) &&
+                labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
                 motor.startMoveTo(posTarget);
                 lastCommandedTarget = posTarget;
+                atExtensionLimit = false;
             }
             if (millis() - lastLog >= 100) {
                 lastLog = millis();
