@@ -74,8 +74,10 @@ void ProfileManager::beginConfig() {
 }
 
 // ---------------------------------------------------------------------------
-float ProfileManager::shallowBottomTargetM() const {
-    return _config.shallowTopTargetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
+float ProfileManager::ascentTargetBottomM() const {
+    // ascentTargetM e' riferito al TOP del float; il PID lavora in riferimento
+    // FONDO (come il sensore), quindi convertiamo aggiungendo la geometria.
+    return _config.ascentTargetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,25 +96,25 @@ bool ProfileManager::setConfig(const RuntimeProfileConfig& config) {
 
 // ---------------------------------------------------------------------------
 bool ProfileManager::validateConfig(const RuntimeProfileConfig& config) const {
-    const float shallowBottomM =
-        config.shallowTopTargetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
+    const float ascentBottomM =
+        config.ascentTargetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
 
     return config.profileCount >= 1 && config.profileCount <= 10 &&
-           isfinite(config.deepTargetM) &&
-           isfinite(config.shallowTopTargetM) &&
+           isfinite(config.descentTargetM) &&
+           isfinite(config.ascentTargetM) &&
            isfinite(config.depthToleranceM) &&
            isfinite(config.holdTimeS) &&
-           isfinite(config.pidTimeoutS) &&
+           isfinite(config.descentTimeoutS) &&
            isfinite(config.ascentTimeoutS) &&
-           isfinite(config.surfaceOffsetM) &&
-           config.deepTargetM >= 0.0f && config.deepTargetM <= 5.0f &&
-           config.shallowTopTargetM >= 0.0f && config.shallowTopTargetM <= 5.0f &&
+           isfinite(config.surfaceRestOffsetM) &&
+           config.descentTargetM >= 0.0f && config.descentTargetM <= 5.0f &&
+           config.ascentTargetM >= 0.0f && config.ascentTargetM <= 5.0f &&
            config.depthToleranceM >= 0.005f && config.depthToleranceM <= 1.0f &&
            config.holdTimeS >= 1.0f && config.holdTimeS <= 600.0f &&
-           config.pidTimeoutS >= 5.0f && config.pidTimeoutS <= 900.0f &&
+           config.descentTimeoutS >= 5.0f && config.descentTimeoutS <= 900.0f &&
            config.ascentTimeoutS >= 5.0f && config.ascentTimeoutS <= 900.0f &&
-           config.surfaceOffsetM >= 0.0f && config.surfaceOffsetM <= 5.0f &&
-           shallowBottomM < config.deepTargetM;
+           config.surfaceRestOffsetM >= 0.0f && config.surfaceRestOffsetM <= 5.0f &&
+           ascentBottomM < config.descentTargetM;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,23 +123,23 @@ void ProfileManager::formatConfigJson(char* buffer, size_t bufferSize) const {
 
     snprintf(buffer, bufferSize,
              "{\"profile_count\":%u,"
-             "\"deep_target_m\":%.3f,"
-             "\"shallow_top_m\":%.3f,"
-             "\"shallow_bottom_m\":%.3f,"
+             "\"descent_target_m\":%.3f,"
+             "\"ascent_target_m\":%.3f,"
+             "\"ascent_target_bottom_m\":%.3f,"
              "\"depth_tolerance_m\":%.3f,"
              "\"hold_s\":%.1f,"
-             "\"pid_timeout_s\":%.1f,"
+             "\"descent_timeout_s\":%.1f,"
              "\"ascent_timeout_s\":%.1f,"
-             "\"surface_offset_m\":%.3f}",
+             "\"surface_rest_offset_m\":%.3f}",
              static_cast<unsigned>(_config.profileCount),
-             _config.deepTargetM,
-             _config.shallowTopTargetM,
-             shallowBottomTargetM(),
+             _config.descentTargetM,
+             _config.ascentTargetM,
+             ascentTargetBottomM(),
              _config.depthToleranceM,
              _config.holdTimeS,
-             _config.pidTimeoutS,
+             _config.descentTimeoutS,
              _config.ascentTimeoutS,
-             _config.surfaceOffsetM);
+             _config.surfaceRestOffsetM);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +162,7 @@ void ProfileManager::_saveConfig() {
 
 // ---------------------------------------------------------------------------
 void ProfileManager::_applyConfigToSubsystems() {
-    sensors.setSurfaceTargetOffset(_config.surfaceOffsetM);
+    sensors.setSurfaceTargetOffset(_config.surfaceRestOffsetM);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +251,8 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     const bool isSurfaceTarget = (targetDepth == TARGET_SURFACE);
     const bool isBottomTarget  = (targetDepth == TARGET_BOTTOM);
     const bool isPIDPhase      = !isSurfaceTarget && !isBottomTarget;
-    const bool isDeepTarget    = fabsf(targetDepth - _config.deepTargetM) < 0.001f;
-    const bool isShallowTarget = fabsf(targetDepth - shallowBottomTargetM()) < 0.001f;
+    const bool isDeepTarget    = fabsf(targetDepth - _config.descentTargetM) < 0.001f;
+    const bool isShallowTarget = fabsf(targetDepth - ascentTargetBottomM()) < 0.001f;
 
     // --- LED and initial motor positioning ---
     if (isPIDPhase) {

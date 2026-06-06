@@ -14,13 +14,13 @@
 
 struct RuntimeProfileConfig {
     uint8_t profileCount = PROFILE_MAX_COUNT;
-    float deepTargetM = TARGET_DEPTH;
-    float shallowTopTargetM = TARGET_SHALLOW_TOP_DEPTH;
+    float descentTargetM = TARGET_DEPTH;            // target discesa, riferito al FONDO del float
+    float ascentTargetM = TARGET_SHALLOW_TOP_DEPTH; // target risalita, riferito al TOP del float
     float depthToleranceM = DEPTH_MAX_ERROR;
     float holdTimeS = STAT_TIME;
-    float pidTimeoutS = TIMEOUT_PID_TIME;
-    float ascentTimeoutS = TIMEOUT_ASCENT;
-    float surfaceOffsetM = SURFACE_TARGET_OFFSET_M;
+    float descentTimeoutS = TIMEOUT_PID_TIME;       // timeout assoluto fase discesa (hold incluso)
+    float ascentTimeoutS = TIMEOUT_ASCENT;          // timeout assoluto fase risalita (hold incluso)
+    float surfaceRestOffsetM = SURFACE_TARGET_OFFSET_M; // top del float sotto pelo a riposo
 };
 
 class ProfileManager {
@@ -31,7 +31,7 @@ public:
     void beginConfig();
 
     const RuntimeProfileConfig& config() const { return _config; }
-    float shallowBottomTargetM() const;
+    float ascentTargetBottomM() const;
     bool setConfig(const RuntimeProfileConfig& config);
     bool validateConfig(const RuntimeProfileConfig& config) const;
     void formatConfigJson(char* buffer, size_t bufferSize) const;

@@ -183,7 +183,7 @@ EspbParsedCommand espbParseSerialCommand(const char* line) {
     }
 
     if (strcmp(token, "PROFILE_SET") == 0) {
-        // PROFILE_SET <count> <deep> <shallow_top> <tol> <hold> <pid_timeout> <ascent_timeout> <surface_offset>
+        // PROFILE_SET <count> <descent> <ascent> <tol> <hold> <descent_timeout> <ascent_timeout> <surface_rest_offset>
         long count = 0;
         float values[7] = {};
         if (!parseLongToken(strtok(nullptr, " "), count) ||
@@ -203,13 +203,13 @@ EspbParsedCommand espbParseSerialCommand(const char* line) {
 
         parsed = makeForwardCommand(CMD_PROFILE_SET);
         parsed.message.payload.profileSet.profileCount = static_cast<uint8_t>(count);
-        parsed.message.payload.profileSet.deepTargetM = values[0];
-        parsed.message.payload.profileSet.shallowTopTargetM = values[1];
+        parsed.message.payload.profileSet.descentTargetM = values[0];
+        parsed.message.payload.profileSet.ascentTargetM = values[1];
         parsed.message.payload.profileSet.depthToleranceM = values[2];
         parsed.message.payload.profileSet.holdTimeS = values[3];
-        parsed.message.payload.profileSet.pidTimeoutS = values[4];
+        parsed.message.payload.profileSet.descentTimeoutS = values[4];
         parsed.message.payload.profileSet.ascentTimeoutS = values[5];
-        parsed.message.payload.profileSet.surfaceOffsetM = values[6];
+        parsed.message.payload.profileSet.surfaceRestOffsetM = values[6];
         return parsed;
     }
 

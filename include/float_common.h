@@ -137,15 +137,19 @@ struct SurfaceOffsetPayload {
   float meters;
 };
 
+// Ordine dei campi invariato rispetto alla versione precedente (solo rinominati):
+// il layout binario e il contratto di serializzazione con la GUI restano compatibili.
+// [essenziale] = si imposta per ogni prova (vedi regolamento MATE Task 4.1).
+// [avanzato]   = safety/calibrazione, cambia di rado (nella GUI sta in "Avanzate").
 struct ProfileSetPayload {
-  uint8_t profileCount;
-  float deepTargetM;
-  float shallowTopTargetM;
-  float depthToleranceM;
-  float holdTimeS;
-  float pidTimeoutS;
-  float ascentTimeoutS;
-  float surfaceOffsetM;
+  uint8_t profileCount;     // [avanzato]   n. immersioni complete
+  float descentTargetM;     // [essenziale] target discesa, riferito al FONDO del float
+  float ascentTargetM;      // [essenziale] target risalita, riferito al TOP del float
+  float depthToleranceM;    // [essenziale] banda +/- attorno al target
+  float holdTimeS;          // [essenziale] tempo di mantenimento al target
+  float descentTimeoutS;    // [avanzato]   timeout assoluto fase discesa (hold incluso)
+  float ascentTimeoutS;     // [avanzato]   timeout assoluto fase risalita (hold incluso)
+  float surfaceRestOffsetM; // [avanzato]   quanto il top del float resta sotto pelo a riposo
 };
 
 union FloatCommandPayload {

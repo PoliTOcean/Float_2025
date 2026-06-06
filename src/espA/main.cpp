@@ -254,10 +254,10 @@ void loop() {
             while (completedProfiles < profileConfig.profileCount && motionController.motionAllowed()) {
                 profileManager.beginProfile(completedProfiles + 1);
                 Debug.printf("Profile %d: PID descent to %.2f m bottom reference\n",
-                             completedProfiles + 1, profileConfig.deepTargetM);
-                profileManager.measure(profileConfig.deepTargetM,
+                             completedProfiles + 1, profileConfig.descentTargetM);
+                profileManager.measure(profileConfig.descentTargetM,
                                        profileConfig.holdTimeS,
-                                       profileConfig.pidTimeoutS);
+                                       profileConfig.descentTimeoutS);
                 if (!motionController.motionAllowed()) {
                     aborted = true;
                     break;
@@ -266,8 +266,8 @@ void loop() {
                 delay(500);
 
                 Debug.printf("Profile %d: PID ascent to %.2f m top reference\n",
-                             completedProfiles + 1, profileConfig.shallowTopTargetM);
-                profileManager.measure(profileManager.shallowBottomTargetM(),
+                             completedProfiles + 1, profileConfig.ascentTargetM);
+                profileManager.measure(profileManager.ascentTargetBottomM(),
                                        profileConfig.holdTimeS,
                                        profileConfig.ascentTimeoutS);
                 if (!motionController.motionAllowed()) {
@@ -524,13 +524,13 @@ void loop() {
         const ProfileSetPayload& payload = comms.lastCommand().payload.profileSet;
         RuntimeProfileConfig nextConfig;
         nextConfig.profileCount      = payload.profileCount;
-        nextConfig.deepTargetM       = payload.deepTargetM;
-        nextConfig.shallowTopTargetM = payload.shallowTopTargetM;
+        nextConfig.descentTargetM    = payload.descentTargetM;
+        nextConfig.ascentTargetM     = payload.ascentTargetM;
         nextConfig.depthToleranceM   = payload.depthToleranceM;
         nextConfig.holdTimeS         = payload.holdTimeS;
-        nextConfig.pidTimeoutS       = payload.pidTimeoutS;
+        nextConfig.descentTimeoutS   = payload.descentTimeoutS;
         nextConfig.ascentTimeoutS    = payload.ascentTimeoutS;
-        nextConfig.surfaceOffsetM    = payload.surfaceOffsetM;
+        nextConfig.surfaceRestOffsetM = payload.surfaceRestOffsetM;
 
         const bool updated = profileManager.setConfig(nextConfig);
         comms.sendMessage(updated ? CMD19_ACK : CMD19_ERR, 1000);
