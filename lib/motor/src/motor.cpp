@@ -89,6 +89,13 @@ void MotorController::startMoveTo(long targetPosition) {
 }
 
 // ---------------------------------------------------------------------------
+void MotorController::startJogStepsUnclamped(long steps) {
+    // Bypassa volutamente _clampTarget: serve a recuperare un pistone
+    // disallineato spingendolo oltre il range nominale. Vedi motor.h.
+    _startRawMoveTo(position() + steps);
+}
+
+// ---------------------------------------------------------------------------
 void MotorController::startMoveSteps(long steps) {
     _startRawMoveTo(position() + steps);
 }

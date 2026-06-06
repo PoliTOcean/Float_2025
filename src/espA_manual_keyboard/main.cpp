@@ -12,6 +12,11 @@ constexpr float MANUAL_MOTOR_SPEED = MOTOR_MAX_SPEED;
 constexpr float MANUAL_MOTOR_ACCELERATION = MOTOR_MAX_ACCELERATION;
 constexpr uint16_t MANUAL_HOLD_TIMEOUT_MS = 250;
 constexpr uint16_t TOF_PRINT_PERIOD_MS = 100;
+// Passo del jog manuale (~2 mm). Abbastanza lungo da non esaurirsi tra due
+// ripetizioni del tasto tenuto premuto, abbastanza corto da fermarsi presto al
+// rilascio. Bypassa il clamp software (vedi startJogStepsUnclamped).
+constexpr long MANUAL_JOG_STEPS =
+    static_cast<long>(2.0f * MOTOR_STEPS_PER_MM + 0.5f);
 
 uint8_t escapeState = 0;
 bool outputsEnabledForMove = false;
@@ -42,12 +47,12 @@ void printHelp() {
 }
 
 void startHoldMove(int8_t direction) {
-    const long target = (direction < 0)
-        ? static_cast<long>(MOTOR_ENDSTOP_MARGIN)
-        : static_cast<long>(MOTOR_MAX_STEPS - MOTOR_ENDSTOP_MARGIN);
-    const long deltaSteps = target - motor.position();
-    const float estimatedSeconds =
-        fabs(static_cast<float>(deltaSteps)) / MANUAL_MOTOR_SPEED;
+    // Jog relativo NON clampato: il manual keyboard serve a recuperare un
+    // pistone disallineato, quindi deve poter uscire dal range nominale
+    // (±MAX-margin) in entrambi i versi. Ogni comando spinge di MANUAL_JOG_STEPS
+    // nel verso scelto; tenendo premuto il tasto il movimento si rinnova prima
+    // di esaurirsi (vedi loop()). Lo stop è manuale (space/x).
+    const long jog = static_cast<long>(direction) * MANUAL_JOG_STEPS;
 
     lastMoveCommandMs = millis();
 
@@ -60,15 +65,14 @@ void startHoldMove(int8_t direction) {
     }
 
     motor.enableOutputs();
-    motor.startMoveTo(target);
+    motor.startJogStepsUnclamped(jog);
     outputsEnabledForMove = true;
     activeDirection = direction;
 
-    Serial.printf("hold target=%ld step, delta=%ld step (%.1f mm), estimated-to-limit=%.1f s\n",
-                  target,
-                  deltaSteps,
-                  static_cast<float>(deltaSteps) / MOTOR_STEPS_PER_MM,
-                  estimatedSeconds);
+    Serial.printf("jog %+ld step (%.1f mm) from pos=%ld step\n",
+                  jog,
+                  static_cast<float>(jog) / MOTOR_STEPS_PER_MM,
+                  motor.position());
 }
 
 void moveTowardHome() {
@@ -112,16 +116,12 @@ void printTofReading(const char* prefix) {
         static_cast<float>(motor.position()) / MOTOR_STEPS_PER_MM
     );
 
-    if (outputsEnabledForMove &&
-        activeDirection > 0 &&
-        TOF_MAX_STOP_DISTANCE_MM > 0.0f &&
-        measurement.valid &&
-        measurement.distanceMm >= TOF_MAX_STOP_DISTANCE_MM) {
-        Serial.printf("TOF max extension stop reached: %.1f >= %.1f mm\n",
-                      measurement.distanceMm,
-                      TOF_MAX_STOP_DISTANCE_MM);
-        stopMotorNow();
-    }
+    // Nessun auto-stop su distanza TOF: il manual keyboard è puramente manuale
+    // (vedi printHelp: "no homing, start away from endstops"). La protezione
+    // contro i fine corsa è il clamp software di startMoveTo (±MAX-margin); lo
+    // stop d'emergenza resta su space/x. La vecchia guardia usava una costante
+    // rimossa e la convenzione geometrica precedente (estensione=positivo),
+    // incoerente con l'homing attuale.
 }
 
 void handleCommand(char command) {

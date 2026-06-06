@@ -40,6 +40,11 @@ public:
     // Non-blocking movement primitives for firmware-level procedures.
     void startMoveTo(long targetPosition);
     void startMoveSteps(long steps);
+    // Jog relativo SENZA clamp ai fine corsa software. Da usare SOLO per il
+    // rientro meccanico manuale (manual keyboard) quando il pistone è
+    // disallineato e serve uscire dal range nominale. Il firmware di missione
+    // non deve usarlo: vedi startMoveSteps/startMoveTo (clampati).
+    void startJogStepsUnclamped(long steps);
     void run();
     void stop();
     long distanceToGo();
