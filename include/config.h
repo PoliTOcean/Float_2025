@@ -79,10 +79,26 @@ constexpr uint8_t  TOF_GPIO1_PIN         = 15;    // Optional INT pin, unused in
 constexpr uint8_t  TOF_MATRIX_ZONE_COUNT = 16;
 constexpr uint16_t TOF_ZONE_ENABLE_MASK  = 0x0660; // Central zones: 5, 6, 9, 10
 constexpr float    TOF_DISTANCE_RAW_OFFSET_MM = 6.0f; // Raw distance is this much higher than real distance
-constexpr float    TOF_HOMING_THRESHOLD     = 75.0f; // Homing stop distance: stop when TOF reads ABOVE this (siringa retratta = lontana dal TOF) (mm)
+constexpr float    TOF_HOMING_THRESHOLD     = 70.0f; // Homing stop distance: stop when TOF reads ABOVE this (siringa retratta = lontana dal TOF) (mm). Lo stop reale cade qualche mm sopra (polling 50ms + conferma + risoluzione TOF grezza): a 70 lo stop effettivo ~73-76 mm, con margine sotto TOF_SAFE_RANGE_MAX_MM=82.
 constexpr float    TOF_HOMING_APPROACH_MM   = 50.0f; // Approach phase: move toward TOF until reading BELOW this, then start homing (mm)
-constexpr float    TOF_SAFE_RANGE_MIN_MM    = 40.0f; // Safety range lower bound: siringa estesa, troppo vicina al TOF (mm)
-constexpr float    TOF_SAFE_RANGE_MAX_MM    = 85.0f; // Safety range upper bound: siringa retratta, troppo lontana dal TOF (mm). 10 mm sopra TOF_HOMING_THRESHOLD per coprire il rumore TOF post-homing senza spingere il pistone a sbattere meccanicamente.
+// Letture TOF consecutive oltre soglia richieste prima di accettare il trigger
+// di homing in ciascuna fase. Un singolo campione (frame recuperato, zona valida
+// ma rumorosa, riflesso) non deve fermare la fase: serve conferma. Stesso pattern
+// di TOF_SAFETY_STOP_SAMPLES.
+constexpr uint8_t  TOF_HOMING_CONFIRM_SAMPLES = 2;
+// Soglie tarate sulla finestra TOF reale misurata in piscina (distanza CORRETTA,
+// cioè raw - TOF_DISTANCE_RAW_OFFSET_MM): pistone esteso ≈ 29 mm, retratto ≈ 79 mm
+// (raw 85). Pendenza ≈ 1.1 mm TOF per mm motore.
+// MIN: sotto il fondo corsa esteso si APRE IL TAPPO ed entra acqua. 32 mm lascia
+// ~3 mm di margine sopra il 29 fisico: al raggiungimento si fa uno STOP PULITO
+// (clamp, niente emergency) per fermare il pistone PRIMA del tappo senza abortire
+// la missione (vedi MotionController::tofGuard / TofGuard::ExtendLimit).
+constexpr float    TOF_SAFE_RANGE_MIN_MM    = 32.0f; // Safety range lower bound: siringa estesa, vicina al TOF — oltre = tappo aperto (mm)
+// MAX: massimo gestibile raw 85 → 79 mm corretta (offset 6 mm). 82 mm = ~3 mm
+// sopra il 79 fisico, copre il rumore post-homing. Verso il retratto il motore
+// può sforare ancora parecchio: oltre 82 è un'ANOMALIA (passi persi, verso
+// sbagliato) → emergency stop (TofGuard::Emergency).
+constexpr float    TOF_SAFE_RANGE_MAX_MM    = 82.0f; // Safety range upper bound: siringa retratta, lontana dal TOF — oltre = anomalia (mm)
 // Soglia (numero di letture TOF consecutive fuori range) prima di scatenare un
 // emergency stop durante un movimento. Un singolo campione fuori soglia in
 // acqua (bolle, riflessi, torbidità) non deve fermare la missione: serve una
@@ -90,9 +106,9 @@ constexpr float    TOF_SAFE_RANGE_MAX_MM    = 85.0f; // Safety range upper bound
 constexpr uint8_t  TOF_SAFETY_STOP_SAMPLES  = 3;
 // Range PID utile: limitiamo l'output u del PID a [MIN, MAX] (anziché [0,1])
 // così la siringa non raggiunge mai gli estremi meccanici che coincidono con
-// le soglie TOF di sicurezza (40/85 mm), lasciando margine contro passi persi
-// e rumore. La corsa motore (~35 mm) entra nella finestra TOF (~45 mm) ma con
-// poco margine agli estremi: questo clamp lo recupera.
+// le soglie TOF di sicurezza (32/82 mm), lasciando margine contro passi persi
+// e rumore. Con lo zero a TOF≈75 mm e pendenza ~1.1, a u=0.92 il TOF ≈ 40 mm,
+// sopra MIN=32 con margine; a u=1.0 ≈ 34 mm (ecco perché MAX resta < 1.0).
 // PID_U_MIN=0 così il PID può svuotare completamente la siringa per risalire
 // (un MIN>0 lasciava il float troppo galleggiante e nascondeva la dinamica
 // reale agli u bassi). Il MAX resta sotto 1.0 per margine verso la soglia TOF
