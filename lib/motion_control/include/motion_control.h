@@ -12,9 +12,24 @@
  *******************************************************************************
  */
 
+// Esito della supervisione TOF durante un movimento. L'azione è ASIMMETRICA
+// perché i due estremi fisici sono diversi:
+//   - limite inferiore (siringa estesa, vicina al TOF): oltre si apre il tappo
+//     ed entra acqua → ExtendLimit, il chiamante fa uno STOP PULITO (ferma il
+//     pistone, NON abortisce la missione).
+//   - limite superiore (siringa retratta, lontana): il motore può sforare ancora
+//     senza danno immediato, ma oltre soglia è un'anomalia → Emergency, lo stop
+//     d'emergenza è già scattato dentro tofGuard().
+enum class TofGuard { Ok, ExtendLimit, Emergency };
+
 class MotionController {
 public:
     MotionController(MotorController& motor, TofSensor& tof);
+
+    // Supervisione TOF da chiamare nel loop di OGNI movimento (campiona al più
+    // ogni MOTOR_HOMING_TOF_PERIOD_MS tramite la guardia su lastTofSampleMs).
+    // context è solo per i log. Vedi enum TofGuard per la semantica dell'esito.
+    TofGuard tofGuard(unsigned long nowMs, unsigned long& lastTofSampleMs, const char* context);
 
     bool homeWithTof(float stopPressureKpa = 0.0f, bool* pressureStop = nullptr, uint8_t* pressureStopSamples = nullptr);
     bool waitForMotor(uint32_t timeoutMs);
@@ -48,9 +63,11 @@ private:
     uint8_t _tofOutOfRangeCount = 0;
 
     float readPressureKpa();
-    bool tofMaxExtensionStopReached(unsigned long nowMs,
-                                    unsigned long& lastTofSampleMs,
-                                    const char* context);
+
+    // Registra un evento di homing sul flash log (sopravvive al power-cycle, in
+    // piscina la USB è scollegata). detail è una stringa libera con i numeri
+    // utili a capire dove si è fermato l'homing.
+    void logHomingEvent(const char* detail);
     bool pressureStopReached(float stopPressureKpa,
                              uint8_t requiredSamples,
                              uint8_t* pressureStopSamples = nullptr);

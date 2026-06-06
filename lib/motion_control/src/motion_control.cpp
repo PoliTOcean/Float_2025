@@ -59,6 +59,21 @@ void MotionController::emergencyStop(const char* reason) {
                               motorPosToU(_motor.position()));
 }
 
+void MotionController::logHomingEvent(const char* detail) {
+    // Stesso meccanismo di emergencyStop(): scriviamo subito sul flash perché
+    // in piscina la USB è scollegata e vogliamo poter ricostruire a posteriori
+    // dove l'homing ha sbagliato (errore vs sforamento distanza massima).
+    sensors.read();
+    char phase[96];
+    snprintf(phase, sizeof(phase), "homing:%s", detail);
+    flashStorage.appendRecord(COMPANY_NUMBER, 0,
+                              static_cast<float>(millis()) / 1000.0f,
+                              sensors.pressure() / 1000.0f,
+                              sensors.depth(), phase,
+                              sensors.sensorDepth(),
+                              motorPosToU(_motor.position()));
+}
+
 void MotionController::serviceEmergencyStop() {
     if (!_emergencyStop) {
         return;
@@ -106,8 +121,16 @@ bool MotionController::waitForMotor(uint32_t timeoutMs) {
         }
 
         _motor.run();
-        if (tofMaxExtensionStopReached(nowMs, lastTofSampleMs, "movement")) {
-            return false;
+        switch (tofGuard(nowMs, lastTofSampleMs, "movement")) {
+            case TofGuard::Emergency:
+                return false;
+            case TofGuard::ExtendLimit:
+                // Fondo corsa esteso: stop pulito, il movimento è "completato"
+                // al limite fisico senza emergency (protezione tappo).
+                _motor.stop();
+                return true;
+            case TofGuard::Ok:
+                break;
         }
 
         ledController.update();
@@ -122,21 +145,21 @@ float MotionController::readPressureKpa() {
     return sensors.pressure() / 1000.0f;
 }
 
-bool MotionController::tofMaxExtensionStopReached(unsigned long nowMs,
-                                                  unsigned long& lastTofSampleMs,
-                                                  const char* context) {
+TofGuard MotionController::tofGuard(unsigned long nowMs,
+                                   unsigned long& lastTofSampleMs,
+                                   const char* context) {
     if (!_tof.isInitialized()) {
-        return false;
+        return TofGuard::Ok;
     }
 
     if (nowMs - lastTofSampleMs < MOTOR_HOMING_TOF_PERIOD_MS) {
-        return false;
+        return TofGuard::Ok;
     }
     lastTofSampleMs = nowMs;
 
     float distanceMm = 0.0f;
     if (!_tof.readDistanceMm(distanceMm)) {
-        return false;
+        return TofGuard::Ok;
     }
 
     const bool tooClose = distanceMm < TOF_SAFE_RANGE_MIN_MM;
@@ -146,30 +169,33 @@ bool MotionController::tofMaxExtensionStopReached(unsigned long nowMs,
         // Lettura valida: azzera la conferma in corso (un glitch isolato non
         // deve accumularsi nel tempo).
         _tofOutOfRangeCount = 0;
-        return false;
+        return TofGuard::Ok;
     }
 
-    // Lettura fuori range: conferma prima di fermare, per ignorare glitch
-    // singoli (bolle, riflessi, torbidità) tipici del TOF in acqua.
+    // Lettura fuori range: conferma prima di agire, per ignorare glitch singoli
+    // (bolle, riflessi, torbidità) tipici del TOF in acqua.
     if (++_tofOutOfRangeCount < TOF_SAFETY_STOP_SAMPLES) {
         Debug.printf("%s: TOF out of range (%.1f mm), sample %u/%u\n",
                      context, distanceMm,
                      _tofOutOfRangeCount, TOF_SAFETY_STOP_SAMPLES);
-        return false;
+        return TofGuard::Ok;
     }
 
     _tofOutOfRangeCount = 0;
     _lastStopTofMm = distanceMm;
     if (tooClose) {
-        Debug.printf("%s: TOF safety stop, too close (%.1f < %.1f mm)\n",
+        // Limite inferiore = siringa a fondo estensione, prima del tappo. STOP
+        // PULITO: il chiamante ferma il pistone senza abortire la missione.
+        Debug.printf("%s: TOF extension limit, too close (%.1f < %.1f mm)\n",
                      context, distanceMm, TOF_SAFE_RANGE_MIN_MM);
-        emergencyStop("TOF below safe range");
-    } else {
-        Debug.printf("%s: TOF safety stop, too far (%.1f > %.1f mm)\n",
-                     context, distanceMm, TOF_SAFE_RANGE_MAX_MM);
-        emergencyStop("TOF above safe range");
+        return TofGuard::ExtendLimit;
     }
-    return true;
+
+    // Limite superiore = anomalia (passi persi, verso sbagliato): emergency stop.
+    Debug.printf("%s: TOF safety stop, too far (%.1f > %.1f mm)\n",
+                 context, distanceMm, TOF_SAFE_RANGE_MAX_MM);
+    emergencyStop("TOF above safe range");
+    return TofGuard::Emergency;
 }
 
 bool MotionController::pressureStopReached(float stopPressureKpa,
@@ -235,6 +261,17 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
     clearEmergencyStop();
     ledController.setState(LEDState::HOMING);
 
+    {
+        float startTof = -1.0f;
+        _tof.readDistanceMm(startTof);
+        char detail[80];
+        snprintf(detail, sizeof(detail),
+                 "start startTof=%.1fmm approachThr=%.1f homeThr=%.1f maxSteps=%ld",
+                 startTof, (float)TOF_HOMING_APPROACH_MM, (float)TOF_HOMING_THRESHOLD,
+                 (long)MOTOR_MAX_STEPS);
+        logHomingEvent(detail);
+    }
+
     _motor.clearPosition();
     _motor.enableOutputs();
     const RuntimeMotorConfig& motorConfig = runtimeConfig.motor();
@@ -253,6 +290,7 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
     _motor.startMoveSteps(-static_cast<long>(MOTOR_MAX_STEPS) * 2);
 
     bool approachDone = false;
+    uint8_t approachSamples = 0;
     while (_motor.distanceToGo() != 0 && !approachDone) {
         if (remoteStopRequested()) {
             return false;
@@ -261,6 +299,12 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
         const unsigned long nowMs = millis();
         if (millis() - startMs > MOTOR_HOMING_TIMEOUT) {
             Debug.println("Motor homing: timed out during approach");
+            char detail[80];
+            snprintf(detail, sizeof(detail),
+                     "phase1_timeout pos=%ld toGo=%ld elapsed=%lums",
+                     (long)_motor.position(), (long)_motor.distanceToGo(),
+                     millis() - startMs);
+            logHomingEvent(detail);
             emergencyStop("homing timeout");
             return false;
         }
@@ -273,10 +317,14 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
             float distanceMm = 0.0f;
             if (_tof.readDistanceMm(distanceMm)) {
                 if (distanceMm < TOF_HOMING_APPROACH_MM) {
-                    Debug.printf("Motor homing: approach reached (%.1f < %.1f mm)\n",
-                                 distanceMm, TOF_HOMING_APPROACH_MM);
-                    approachDone = true;
-                    _motor.stop();
+                    if (++approachSamples >= TOF_HOMING_CONFIRM_SAMPLES) {
+                        Debug.printf("Motor homing: approach reached (%.1f < %.1f mm)\n",
+                                     distanceMm, TOF_HOMING_APPROACH_MM);
+                        approachDone = true;
+                        _motor.stop();
+                    }
+                } else {
+                    approachSamples = 0;
                 }
             }
         }
@@ -287,6 +335,16 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
 
     if (!approachDone) {
         Debug.println("Motor homing: approach phase failed");
+        // distanceToGo()==0 senza approachDone significa che il motore ha
+        // esaurito la corsa massima (2*MOTOR_MAX_STEPS) senza che il TOF
+        // scendesse sotto la soglia di approccio → "sfora la distanza massima".
+        float distanceMm = -1.0f;
+        _tof.readDistanceMm(distanceMm);
+        char detail[80];
+        snprintf(detail, sizeof(detail),
+                 "phase1_no_approach pos=%ld lastTof=%.1fmm thr=%.1f",
+                 (long)_motor.position(), distanceMm, (float)TOF_HOMING_APPROACH_MM);
+        logHomingEvent(detail);
         emergencyStop("homing approach failed");
         return false;
     }
@@ -299,6 +357,11 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
             }
             if (millis() - settleStart > 2000) {
                 Debug.println("Motor homing: timeout settling approach");
+                char detail[64];
+                snprintf(detail, sizeof(detail),
+                         "phase1_settle_timeout pos=%ld toGo=%ld",
+                         (long)_motor.position(), (long)_motor.distanceToGo());
+                logHomingEvent(detail);
                 emergencyStop("homing approach settle timeout");
                 return false;
             }
@@ -311,8 +374,15 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
     // Phase 2: homing — invert direction (positive, siringa che si retrae) finché TOF legge
     // sopra TOF_HOMING_THRESHOLD.
     Debug.println("Motor homing: phase 2 (retract away from TOF)");
+    {
+        char detail[48];
+        snprintf(detail, sizeof(detail), "phase2_start pos=%ld",
+                 (long)_motor.position());
+        logHomingEvent(detail);
+    }
     _motor.startMoveSteps(static_cast<long>(MOTOR_MAX_STEPS) * 2);
     bool homeDetected = false;
+    uint8_t homeSamples = 0;
 
     while (_motor.distanceToGo() != 0 && !homeDetected) {
         if (remoteStopRequested()) {
@@ -332,6 +402,12 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
 
         if (millis() - startMs > MOTOR_HOMING_TIMEOUT) {
             Debug.println("Motor homing: timed out");
+            char detail[80];
+            snprintf(detail, sizeof(detail),
+                     "phase2_timeout pos=%ld toGo=%ld elapsed=%lums",
+                     (long)_motor.position(), (long)_motor.distanceToGo(),
+                     millis() - startMs);
+            logHomingEvent(detail);
             emergencyStop("homing timeout");
             return false;
         }
@@ -344,10 +420,14 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
             float distanceMm = 0.0f;
             if (_tof.readDistanceMm(distanceMm)) {
                 if (distanceMm > TOF_HOMING_THRESHOLD) {
-                    Debug.printf("Motor homing: threshold reached (%.1f > %.1f mm)\n",
-                                 distanceMm, TOF_HOMING_THRESHOLD);
-                    homeDetected = true;
-                    _motor.stop();
+                    if (++homeSamples >= TOF_HOMING_CONFIRM_SAMPLES) {
+                        Debug.printf("Motor homing: threshold reached (%.1f > %.1f mm)\n",
+                                     distanceMm, TOF_HOMING_THRESHOLD);
+                        homeDetected = true;
+                        _motor.stop();
+                    }
+                } else {
+                    homeSamples = 0;
                 }
             }
         }
@@ -358,6 +438,16 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
 
     if (!homeDetected) {
         Debug.println("Motor homing: no TOF detection");
+        // distanceToGo()==0 senza homeDetected: il motore ha consumato tutta la
+        // corsa (2*MOTOR_MAX_STEPS) in retrazione senza che il TOF superasse la
+        // soglia di home → è il caso "sfora la distanza massima".
+        float distanceMm = -1.0f;
+        _tof.readDistanceMm(distanceMm);
+        char detail[80];
+        snprintf(detail, sizeof(detail),
+                 "phase2_no_detect pos=%ld lastTof=%.1fmm thr=%.1f",
+                 (long)_motor.position(), distanceMm, (float)TOF_HOMING_THRESHOLD);
+        logHomingEvent(detail);
         emergencyStop("homing finished without TOF detection");
         return false;
     }
@@ -367,6 +457,10 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
     _motor.startMoveSteps(static_cast<long>(MOTOR_ENDSTOP_MARGIN));
     if (!waitForMotor(2000)) {
         Debug.println("Motor homing: timeout during backoff");
+        char detail[48];
+        snprintf(detail, sizeof(detail), "backoff_timeout pos=%ld",
+                 (long)_motor.position());
+        logHomingEvent(detail);
         return false;
     }
 
@@ -376,6 +470,7 @@ bool MotionController::homeWithTof(float stopPressureKpa, bool* pressureStop, ui
     clearEmergencyStop();
 
     Debug.println("Motor homing: complete, position set to 0");
+    logHomingEvent("complete pos=0");
     return true;
 }
 
@@ -453,30 +548,19 @@ bool MotionController::moveToMax(uint32_t timeoutMs,
 
         _motor.run();
 
-        // Limite TOF inferiore = siringa completamente estesa: stop pulito,
-        // non emergency stop. Permette al chiamante (es. balance) di fare
-        // l'hold a fine corsa invece di considerarlo un errore.
-        if (_tof.isInitialized() && nowMs - lastTofSampleMs >= MOTOR_HOMING_TOF_PERIOD_MS) {
-            lastTofSampleMs = nowMs;
-            float distanceMm = 0.0f;
-            if (_tof.readDistanceMm(distanceMm) && distanceMm <= TOF_SAFE_RANGE_MIN_MM) {
-                Debug.printf("moveToMax: TOF reached extension limit (%.1f <= %.1f mm)\n",
-                             distanceMm, TOF_SAFE_RANGE_MIN_MM);
+        // Limite TOF inferiore = siringa completamente estesa: stop PULITO (non
+        // emergency). Permette al chiamante (es. balance) di fare l'hold a fine
+        // corsa invece di considerarlo un errore. Limite superiore = anomalia →
+        // emergency stop (già scattato dentro tofGuard).
+        switch (tofGuard(nowMs, lastTofSampleMs, "moveToMax")) {
+            case TofGuard::Emergency:
+                return false;
+            case TofGuard::ExtendLimit:
                 _motor.stop();
-                while (_motor.distanceToGo() != 0) {
-                    _motor.run();
-                    yield();
-                }
                 _motor.disableOutputs();
                 return true;
-            }
-            if (distanceMm > TOF_SAFE_RANGE_MAX_MM) {
-                Debug.printf("moveToMax: TOF safety stop, too far (%.1f > %.1f mm)\n",
-                             distanceMm, TOF_SAFE_RANGE_MAX_MM);
-                _lastStopTofMm = distanceMm;
-                emergencyStop("TOF above safe range");
-                return false;
-            }
+            case TofGuard::Ok:
+                break;
         }
 
         ledController.update();
@@ -525,6 +609,9 @@ bool MotionController::_balanceStrokeTo(long targetPos,
     _motor.startMoveTo(targetPos);
 
     const unsigned long moveStart = millis();
+    unsigned long lastTofSampleMs = 0;
+    char tofCtx[32];
+    snprintf(tofCtx, sizeof(tofCtx), "balance %s", label);
     while (_motor.distanceToGo() != 0) {
         if (remoteStopRequested()) {
             remoteStopHit = true;
@@ -543,6 +630,18 @@ bool MotionController::_balanceStrokeTo(long targetPos,
             return false;
         }
         _motor.run();
+        // Supervisione TOF: fondo corsa esteso (tappo) = stop pulito a fine
+        // stroke; oltre il limite superiore = emergency (già scattato).
+        switch (tofGuard(millis(), lastTofSampleMs, tofCtx)) {
+            case TofGuard::Emergency:
+                return false;
+            case TofGuard::ExtendLimit:
+                _motor.stop();
+                _motor.disableOutputs();
+                return true;
+            case TofGuard::Ok:
+                break;
+        }
         ledController.update();
         yield();
     }
