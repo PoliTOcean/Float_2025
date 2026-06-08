@@ -1,17 +1,17 @@
-# PoliTOcean Float 2025 - Technical Documentation
+# PoliTOcean Float - Technical Documentation
 
-[![CI](https://github.com/PoliTOcean/Float_2025/actions/workflows/ci.yml/badge.svg)](https://github.com/PoliTOcean/Float_2025/actions/workflows/ci.yml)
+[![CI](https://github.com/PoliTOcean/Float/actions/workflows/ci.yml/badge.svg)](https://github.com/PoliTOcean/Float/actions/workflows/ci.yml)
 
 **Version:** 11.2.0
 **Team:** PoliTOcean @ Politecnico di Torino  
 **Maintainers:** Colabella Davide, Benevenga Filippo  
-**Competition:** MATE ROV 2025/26
+**Competition:** MATE ROV 2026
 
 --------------------------------------------------------------------------
 
 ## TABLE OF CONTENTS
 
-- [PoliTOcean Float 2025 - Technical Documentation](#politocean-float-2025---technical-documentation)
+- [PoliTOcean Float - Technical Documentation](#politocean-float---technical-documentation)
   - [TABLE OF CONTENTS](#table-of-contents)
   - [PROJECT OVERVIEW](#project-overview)
     - [Introduction and Requirements](#introduction-and-requirements)
@@ -648,7 +648,7 @@ pio test -e espA
 Run all commands from the project root:
 
 ```bash
-cd Float_2025
+cd Float
 ```
 
 To build and upload the main firmware targets:
