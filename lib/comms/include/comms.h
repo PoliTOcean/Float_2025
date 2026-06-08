@@ -27,9 +27,11 @@ public:
     // Returns true if the peer acknowledged delivery.
     bool sendMessage(const char* message, uint32_t timeoutMs = 1000);
 
-    // Access the last received command (set by the ESP-NOW receive callback)
-    const output_message& lastCommand() const { return _received; }
-    void clearCommand() { _received = makeOutputMessage(CMD_IDLE); }
+    // Access the last received command (set by the ESP-NOW receive callback).
+    // Returns a snapshot by value: the receive callback runs in the WiFi task,
+    // so the read/write must be guarded to avoid a torn struct.
+    output_message lastCommand() const;
+    void clearCommand();
 
     // Outgoing packet — callers fill status_to_send.charge before calling sendMessage()
     input_message status_to_send;
@@ -42,6 +44,10 @@ private:
     esp_now_peer_info_t _peerInfo;
     output_message      _received;
     volatile int8_t     _sendResult = -1; // -1=pending, 0=fail, 1=success
+
+    // Guards _received against concurrent access between the WiFi-task receive
+    // callback (writer) and the main loop (reader).
+    mutable portMUX_TYPE _recvMux = portMUX_INITIALIZER_UNLOCKED;
 
     void _initEspNow();
     void _deInitEspNow();

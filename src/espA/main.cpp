@@ -395,7 +395,8 @@ void loop() {
     // -----------------------------------------------------------------------
     case CMD_PID_CONFIG_SET:
     {
-        const PidConfigPayload& payload = comms.lastCommand().payload.pidConfig;
+        const output_message cmd = comms.lastCommand();
+        const PidConfigPayload& payload = cmd.payload.pidConfig;
         RuntimePidConfig nextConfig;
         nextConfig.kp = payload.kp;
         nextConfig.ki = payload.ki;
@@ -475,7 +476,8 @@ void loop() {
     case CMD_SYRINGE_SET: // Test: posiziona siringa a u in [0,1] per N secondi
     {
         if (comms.sendMessage(CMD15_ACK, 1000)) {
-            const SyringeSetPayload& payload = comms.lastCommand().payload.syringeSet;
+            const output_message cmd = comms.lastCommand();
+            const SyringeSetPayload& payload = cmd.payload.syringeSet;
             const float u   = payload.uNorm;
             const float dur = payload.durationS;
             runSyringeSet(u, dur);
@@ -488,7 +490,8 @@ void loop() {
     case CMD_PID_HOLD: // Test: PID a quota fissa per N secondi
     {
         if (comms.sendMessage(CMD16_ACK, 1000)) {
-            const PidHoldPayload& payload = comms.lastCommand().payload.pidHold;
+            const output_message cmd = comms.lastCommand();
+            const PidHoldPayload& payload = cmd.payload.pidHold;
             const float depth = payload.depthM;
             const float dur   = payload.durationS;
             runPidHold(depth, dur);
@@ -521,7 +524,8 @@ void loop() {
     // -----------------------------------------------------------------------
     case CMD_PROFILE_SET:
     {
-        const ProfileSetPayload& payload = comms.lastCommand().payload.profileSet;
+        const output_message cmd = comms.lastCommand();
+        const ProfileSetPayload& payload = cmd.payload.profileSet;
         RuntimeProfileConfig nextConfig;
         nextConfig.profileCount      = payload.profileCount;
         nextConfig.descentTargetM    = payload.descentTargetM;
@@ -551,7 +555,8 @@ void loop() {
     // -----------------------------------------------------------------------
     case CMD_BALANCE_CONFIG_SET:
     {
-        const BalanceConfigPayload& payload = comms.lastCommand().payload.balanceConfig;
+        const output_message cmd = comms.lastCommand();
+        const BalanceConfigPayload& payload = cmd.payload.balanceConfig;
         RuntimeBalanceConfig nextConfig;
         nextConfig.holdMs = payload.holdMs;
         nextConfig.stopPressureDeltaKpa = payload.stopPressureDeltaKpa;
@@ -577,7 +582,8 @@ void loop() {
     // -----------------------------------------------------------------------
     case CMD_MOTOR_CONFIG_SET:
     {
-        const MotorConfigPayload& payload = comms.lastCommand().payload.motorConfig;
+        const output_message cmd = comms.lastCommand();
+        const MotorConfigPayload& payload = cmd.payload.motorConfig;
         RuntimeMotorConfig nextConfig;
         nextConfig.maxSpeed = payload.maxSpeed;
         nextConfig.maxAcceleration = payload.maxAcceleration;
@@ -754,25 +760,11 @@ static void runSyringeSet(float uNorm, float durationS) {
     Debug.println("# done");
 }
 
-// Hold PID a quota fissa per N secondi, log a 5 Hz con CSV completo.
-// Versione "tarable" di un profile PID phase, senza pre-position né hold check.
-static void runPidHold(float depthTarget, float durationS) {
-    if (depthTarget < 0.1f || depthTarget > 5.0f) {
-        Debug.println("ERR: depthTarget in [0.1, 5.0] m");
-        return;
-    }
-    if (durationS < 1.0f || durationS > 600.0f) {
-        Debug.println("ERR: durationS in [1, 600]");
-        return;
-    }
-
-    Debug.printf("# PID_HOLD target=%.3fm dur=%.1fs Kp=%.4f Ki=%.4f Kd=%.4f "
-                  "period=%u alpha=%.3f\n",
-                  depthTarget, durationS,
-                  pidController.Kp, pidController.Ki, pidController.Kd,
-                  pidController.periodMs, pidController.alphaD);
-    Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
-
+// Loop PID condiviso da PID_HOLD e PID_STEP: tiene la quota target per
+// durationMs, ricalcolando il setpoint a pidController.periodMs e loggando il
+// CSV ogni logPeriodMs. La supervisione TOF, il deadband e la saturazione al
+// fondo corsa sono identici fra i due comandi: vivono qui per non divergere.
+static void runPidLoop(float depthTarget, unsigned long durationMs, unsigned long logPeriodMs) {
     pidController.reset();
     motor.enableOutputs();
 
@@ -785,7 +777,7 @@ static void runPidHold(float depthTarget, float durationS) {
     unsigned long lastLog  = 0;
     unsigned long lastTofSampleMs = 0;
     bool atExtensionLimit = false;  // pistone fermo al fondo corsa (tappo): non ricomandare verso l'estensione
-    while (millis() - t0 < (unsigned long)(durationS * 1000.0f)) {
+    while (millis() - t0 < durationMs) {
         if (Serial.available()) { Debug.println("# aborted"); break; }
         if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
 
@@ -820,7 +812,7 @@ static void runPidHold(float depthTarget, float durationS) {
                 lastCommandedTarget = posTarget;
                 atExtensionLimit = false;
             }
-            if (millis() - lastLog >= 200) {
+            if (millis() - lastLog >= logPeriodMs) {
                 lastLog = millis();
                 Debug.printf("%lu,%.3f,%.3f,%.3f,%.3f,%ld\n",
                               millis() - t0, depth, depthTarget,
@@ -833,6 +825,28 @@ static void runPidHold(float depthTarget, float durationS) {
     motor.stop();
     motor.disableOutputs();
     Debug.println("# done");
+}
+
+// Hold PID a quota fissa per N secondi, log a 5 Hz con CSV completo.
+// Versione "tarable" di un profile PID phase, senza pre-position né hold check.
+static void runPidHold(float depthTarget, float durationS) {
+    if (depthTarget < 0.1f || depthTarget > 5.0f) {
+        Debug.println("ERR: depthTarget in [0.1, 5.0] m");
+        return;
+    }
+    if (durationS < 1.0f || durationS > 600.0f) {
+        Debug.println("ERR: durationS in [1, 600]");
+        return;
+    }
+
+    Debug.printf("# PID_HOLD target=%.3fm dur=%.1fs Kp=%.4f Ki=%.4f Kd=%.4f "
+                  "period=%u alpha=%.3f\n",
+                  depthTarget, durationS,
+                  pidController.Kp, pidController.Ki, pidController.Kd,
+                  pidController.periodMs, pidController.alphaD);
+    Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
+
+    runPidLoop(depthTarget, (unsigned long)(durationS * 1000.0f), 200);
 }
 
 // Step response: cambio istantaneo del setpoint, esci a 60 s.
@@ -849,59 +863,5 @@ static void runPidStep(float depthTarget) {
                   pidController.periodMs, pidController.alphaD);
     Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
 
-    pidController.reset();
-    motor.enableOutputs();
-
-    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
-    const long deadbandSteps = (long)(pidController.minRetargetFrac * (float)usable);
-    long lastCommandedTarget = motor.position();
-
-    const unsigned long t0 = millis();
-    unsigned long lastTick = 0;
-    unsigned long lastLog  = 0;
-    unsigned long lastTofSampleMs = 0;
-    bool atExtensionLimit = false;  // pistone fermo al fondo corsa (tappo): non ricomandare verso l'estensione
-    while (millis() - t0 < 60000UL) {
-        if (Serial.available()) { Debug.println("# aborted"); break; }
-        if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
-
-        // Supervisione TOF su ogni movimento (vedi runPidHold per la semantica).
-        const TofGuard guard = motionController.tofGuard(millis(), lastTofSampleMs, "pid");
-        if (guard == TofGuard::ExtendLimit) {
-            if (!atExtensionLimit) {
-                motor.stop();
-                lastCommandedTarget = motor.position();
-                atExtensionLimit = true;
-            }
-        } else if (guard == TofGuard::Emergency) {
-            Debug.println("# aborted (TOF)");
-            break;
-        }
-
-        if (millis() - lastTick >= pidController.periodMs) {
-            lastTick = millis();
-            sensors.read();
-            const float depth = sensors.depth();
-            const float u = pidController.computeNormalized(depthTarget, depth);
-            const long posTarget = uToMotorPos(u);
-            const bool retreating = posTarget > motor.position();
-            if ((!atExtensionLimit || retreating) &&
-                labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
-                motor.startMoveTo(posTarget);
-                lastCommandedTarget = posTarget;
-                atExtensionLimit = false;
-            }
-            if (millis() - lastLog >= 100) {
-                lastLog = millis();
-                Debug.printf("%lu,%.3f,%.3f,%.3f,%.3f,%ld\n",
-                              millis() - t0, depth, depthTarget,
-                              depthTarget - depth, u, motor.position());
-            }
-        }
-        ledController.update();
-        yield();
-    }
-    motor.stop();
-    motor.disableOutputs();
-    Debug.println("# done");
+    runPidLoop(depthTarget, 60000UL, 100);
 }
