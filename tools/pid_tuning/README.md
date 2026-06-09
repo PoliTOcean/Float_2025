@@ -99,12 +99,13 @@ Hai due sorgenti possibili.
 Nel pannello *Profile Data Log* attiva lo switch **"Raw chart"**: compare una **tabella**. Selezionala, copiala e incollala nel notebook (variabile `DATI`). Le righe sono tipo:
 
 ```
-7289830   0.51   101         →  timestamp(ms)  depth(m)  pressure(kPa)  [syringe(u)]
+Time (s)   Depth     Pressure    Syringe
+12.40      0.51 m    101.30 kPa  0.30 u
 ```
 
-Il notebook è robusto: capisce **2, 3 o 4 colonne**, con o senza unità (`m`, `kPa`), timestamp in **millisecondi**, separatori spazi/virgole/tab, e `u` anche in percentuale (`30` → `0.30`). Accetta pure il `raw` in formato **JSON**.
+Il notebook è robusto: capisce **2, 3 o 4 colonne**, con o senza unità (`m`, `kPa`), timestamp in secondi o **millisecondi**, separatori spazi/virgole/tab, decimali con la virgola, righe `N/A`, e `u` anche in percentuale (`30` → `0.30`). Accetta pure il `raw` in formato **JSON**.
 
-> ⚠️ **La tabella "Raw chart" attuale mostra solo `Timestamp, Depth, Pressure` (niente siringa).** Con sole queste 3 colonne ottieni l'analisi della profondità e i consigli su `kp/ki/kd`, **ma non** `u_neutral` né la saturazione. Per quelli serve la colonna `u`: usa il **log flash** (opzione B) **oppure** aggiungi `syringe` alla tabella della GUI (la `u` è già nei dati `raw`, basta mostrarla).
+> La tabella "Raw chart" include la colonna **Syringe (`u`)**: incollandola ottieni il tuning completo (`kp/ki/kd`, `u_neutral` e controllo saturazione). Se per qualche motivo la colonna `u` manca, il notebook analizza comunque la profondità e ti avvisa di usare il log flash per il resto.
 
 ### B) Caricare il log flash del Float (CSV, consigliato per il tuning completo)
 Il Float salva su memoria flash, **dopo ogni profilo**, un CSV a **8 colonne** (`lib/flash_storage/`):
@@ -120,7 +121,7 @@ company_number, profile_id, time_s, pressure_kpa, depth_m, phase, sensor_depth_m
 
 Il notebook riconosce **per nome di colonna** sia il JSON `raw` della GUI, sia il CSV a 8 colonne, sia un export ridotto (`timestamp, profondità, pressione, syringe/u`), con separatore `,` o `;`.
 
-> Per i consigli su `kp/ki/kd` basta la tabella della GUI (modo A). Per **`u_neutral`** e il controllo della **saturazione** serve la colonna `u`: usa il **log flash** (modo B) o aggiungi `syringe` alla tabella "Raw chart".
+> La tabella della GUI (modo A) basta per il tuning completo, colonna `Syringe` inclusa. Il log flash (modo B) resta utile come sorgente alternativa: ha anche `phase` (segnala gli emergency stop) e `sensor_depth_m`.
 
 ---
 
