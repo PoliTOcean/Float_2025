@@ -113,6 +113,11 @@ bool ProfileManager::validateConfig(const RuntimeProfileConfig& config) const {
            config.holdTimeS >= 1.0f && config.holdTimeS <= 600.0f &&
            config.descentTimeoutS >= 5.0f && config.descentTimeoutS <= 900.0f &&
            config.ascentTimeoutS >= 5.0f && config.ascentTimeoutS <= 900.0f &&
+           // Il timeout di fase include anche l'hold: se non lascia spazio
+           // all'hold piu' un margine di discesa/risalita, tronca la fase
+           // in silenzio (successo in piscina: timeout 10 s con hold 60 s).
+           config.descentTimeoutS >= config.holdTimeS + 30.0f &&
+           config.ascentTimeoutS >= config.holdTimeS + 30.0f &&
            config.surfaceRestOffsetM >= 0.0f && config.surfaceRestOffsetM <= 5.0f &&
            ascentBottomM < config.descentTargetM;
 }
@@ -248,6 +253,14 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     Debug.printf("Profile phase: target=%.2f hold=%.0fs timeout=%.0fs\n",
                  targetDepth, holdTimeSec, timeoutSec);
 
+    // Record di inizio fase con i parametri EFFETTIVI: dal dump flash si vede
+    // quale hold/timeout ha girato davvero, non solo quello atteso dalla GUI.
+    sensors.read();
+    char phaseTag[48];
+    snprintf(phaseTag, sizeof(phaseTag), "phase_start hold=%.0f timeout=%.0f",
+             holdTimeSec, timeoutSec);
+    _logProfileReading(phaseTag);
+
     const bool isSurfaceTarget = (targetDepth == TARGET_SURFACE);
     const bool isBottomTarget  = (targetDepth == TARGET_BOTTOM);
     const bool isPIDPhase      = !isSurfaceTarget && !isBottomTarget;
@@ -287,12 +300,14 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
 
         if (motionController.remoteStopRequested()) {
             Debug.println("Profile phase: remote stop");
+            _logProfileReading("exit_remote_stop");
             break;
         }
 
         // Abort if phase timeout exceeded
         if (millis() - phaseStart > static_cast<unsigned long>(timeoutSec * 1000UL)) {
             Debug.println("Profile phase: timeout");
+            _logProfileReading("exit_timeout");
             break;
         }
 
@@ -414,6 +429,7 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
                     static_cast<int>(holdTimeSec * 1000.0f / PERIOD_EEPROM_WRITE) + 1;
                 if (stableCount >= requiredTicks) {
                     Debug.println("Profile: PID hold complete — target depth sustained");
+                    _logProfileReading("exit_hold_ok");
                     break;
                 }
             } else {
