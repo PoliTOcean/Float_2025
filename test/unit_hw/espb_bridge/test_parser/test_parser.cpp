@@ -90,13 +90,13 @@ void test_parameterized_commands_fill_payload() {
     TEST_ASSERT_EQUAL_UINT8(commandType(EspbParsedCommandType::ForwardToEspA), commandType(profile.type));
     TEST_ASSERT_EQUAL_UINT8(CMD_PROFILE_SET, profile.message.command);
     TEST_ASSERT_EQUAL_UINT8(2, profile.message.payload.profileSet.profileCount);
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.5f, profile.message.payload.profileSet.deepTargetM);
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.4f, profile.message.payload.profileSet.shallowTopTargetM);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.5f, profile.message.payload.profileSet.descentTargetM);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.4f, profile.message.payload.profileSet.ascentTargetM);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.33f, profile.message.payload.profileSet.depthToleranceM);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 30.0f, profile.message.payload.profileSet.holdTimeS);
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 180.0f, profile.message.payload.profileSet.pidTimeoutS);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 180.0f, profile.message.payload.profileSet.descentTimeoutS);
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 120.0f, profile.message.payload.profileSet.ascentTimeoutS);
-    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.10f, profile.message.payload.profileSet.surfaceOffsetM);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.10f, profile.message.payload.profileSet.surfaceRestOffsetM);
 }
 
 void test_output_message_protocol_shape() {
