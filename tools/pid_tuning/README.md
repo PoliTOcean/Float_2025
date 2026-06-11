@@ -18,6 +18,7 @@ Due cose:
    - **Incolla** nella variabile `DATI` la **tabella** copiata dalla vista *"Raw chart"* della GUI (o un JSON), **oppure**
    - lascia `DATI` vuoto e **carica un CSV** (export GUI o log flash `DUMP_LOG`).
    - Se non metti nulla, usa un log di esempio così vedi subito come funziona.
+4. Il notebook **riconosce da solo le fasi** del log: solo discesa, solo salita o profilo completo (discesa → hold → salita), con metriche e diagnosi **per fase**. Imposti due target come nella GUI (`target_discesa_m` riferito al FONDO, `target_salita_m` riferito al TOP, convertito da solo); con `fase = "discesa"` o `"salita"` puoi forzare l'analisi su una sola fase. L'eventuale riemersione finale in superficie viene esclusa dall'analisi della salita.
 
 > Uso locale (senza Colab): `pip install -r requirements.txt` e poi `jupyter notebook pid_tuning.ipynb`.
 
