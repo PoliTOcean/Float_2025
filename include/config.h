@@ -45,9 +45,9 @@ constexpr float MOTOR_STEPS_PER_MM =
 constexpr float    MOTOR_TRAVEL_MM       = 35.0f; // Normal commanded syringe travel (mm)
 constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
 																 MOTOR_STEPS_PER_MM + 0.5f);
-constexpr uint32_t MOTOR_MAX_SPEED       = 1800;  // Normal operating speed (steps/s)
-constexpr uint32_t MOTOR_MAX_ACCELERATION = 1800; // Normal acceleration/deceleration (steps/s^2)
-constexpr uint32_t MOTOR_HOMING_SPEED    = 1800;   // Homing speed (steps/s)
+constexpr uint32_t MOTOR_MAX_SPEED       = 1400;  // Normal operating speed (steps/s)
+constexpr uint32_t MOTOR_MAX_ACCELERATION = 1400; // Normal acceleration/deceleration (steps/s^2)
+constexpr uint32_t MOTOR_HOMING_SPEED    = 1400;   // Homing speed (steps/s)
 constexpr uint16_t MOTOR_ENDSTOP_MARGIN  = 10;    // Safety margin from endstops (steps)
 
 // Geometria reale (verificata col balance, coerente con l'homing):
@@ -158,8 +158,9 @@ constexpr float    PID_MIN_RETARGET_FRAC  = 0.001f;// dead-band ri-comando (fraz
 // Pre-posizionamento siringa all'inizio della discesa PID (kick-start): u alto
 // per avviare l'affondamento. Era 0.979 (siringa quasi piena) ma faceva tirare
 // il float dritto fino al fondo prima che il PID frenasse (overshoot ~26cm in
-// vasca). Ridotto per avviare la discesa senza superare il target.
-constexpr float    PID_DESCENT_KICK_U     = 0.30f;
+// vasca). Ridotto a 0.30, poi a 0.15: con 0.30 + spinta del PID (Kp*error) la
+// discesa partiva ancora troppo veloce e si sfondava il target di oltre 1 m.
+constexpr float    PID_DESCENT_KICK_U     = 0.15f;
 
 // ---------------------------------------------------------------------------
 // FLOAT PHYSICAL / MISSION CONSTANTS
@@ -205,7 +206,7 @@ constexpr char     WIFI_PASSWORD[]     = "politocean";
 
 // constexpr uint8_t  MAC_ESPB[6]        = {0xEC, 0xE3, 0x34, 0xCE, 0x59, 0x1C};
 constexpr uint8_t MAC_ESPB[6] = {0x88, 0x57, 0x21, 0x84, 0x8C, 0xE8};
-constexpr uint8_t MAC_ESPA[6] = {0x88, 0x57, 0x21, 0x84, 0x83, 0x8C};
+constexpr uint8_t MAC_ESPA[6] = {0x88, 0x57, 0x21, 0x84, 0x7E, 0xCC};
 constexpr uint8_t ESPNOW_CHANNEL = 1;
 
 // ---------------------------------------------------------------------------
