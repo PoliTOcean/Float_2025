@@ -32,6 +32,9 @@ public:
 
     const RuntimeProfileConfig& config() const { return _config; }
     float ascentTargetBottomM() const;
+    // Target della sosta finale (top del float a surfaceRestOffsetM sotto il pelo),
+    // convertito in riferimento FONDO come il PID. Vedi ascentTargetBottomM().
+    float restTargetBottomM() const;
     bool setConfig(const RuntimeProfileConfig& config);
     bool validateConfig(const RuntimeProfileConfig& config) const;
     void formatConfigJson(char* buffer, size_t bufferSize) const;

@@ -55,6 +55,19 @@ public:
     // Battery bus voltage (mV) — reads from INA219 on demand
     uint32_t batteryMilliVolts();
 
+    // -----------------------------------------------------------------------
+    // SIMULATORE (HIL da banco): quando attivo, sensorDepth()/pressure() — e
+    // quindi depth()/bottomDepth()/topDepth() che li usano — restituiscono una
+    // quota SIMULATA da un modello fisico mosso dalla posizione reale del motore.
+    // Il motore si muove davvero: PID_HOLD/PID_STEP/measure()/GO girano invariati.
+    // -----------------------------------------------------------------------
+    void  simEnable(bool on);
+    bool  simEnabled() const { return _simEnabled; }
+    void  simConfigure(float uNeutral, float accelGain, float dragQuad, float poolDepth);
+    void  simReset(float sensorDepthM = 0.0f);
+    float simSensorDepth() const { return _simZ; }
+    void  simFormatStatus(char* buffer, size_t bufferSize) const;
+
 private:
     MS5837    _bar02;
     INA_Class _ina;
@@ -62,6 +75,17 @@ private:
 
     float     _atmPressurePa  = 0.0f; // Reference pressure set at startup
     float     _surfaceTargetOffsetM = SURFACE_TARGET_OFFSET_M;
+
+    // --- Stato simulatore ---
+    bool          _simEnabled   = false;
+    float         _simZ         = 0.0f; // quota sensore simulata [m]
+    float         _simV         = 0.0f; // velocità verticale [m/s] (+ = giù/affonda)
+    unsigned long _simLastMs    = 0;    // 0 = primo step (inizializza dt)
+    float         _simUNeutral  = SIM_U_NEUTRAL;
+    float         _simAccelGain = SIM_ACCEL_GAIN;
+    float         _simDragQuad  = SIM_DRAG_QUAD;
+    float         _simPoolDepth = SIM_POOL_DEPTH;
+    void  _simStep();
 
     void _initPressureSensor();
     void _initPowerMonitor();

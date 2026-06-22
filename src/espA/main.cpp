@@ -69,6 +69,8 @@ static void servicePidTuningSerial();
 static void runSyringeSet(float uNorm, float durationS);
 static void runPidHold(float depthTarget, float durationS);
 static void runPidStep(float depthTarget);
+static bool runVerticalProfiles(uint8_t& completedProfiles);
+static void attemptAutoRecovery();
 // ---------------------------------------------------------------------------
 // SETUP
 // ---------------------------------------------------------------------------
@@ -245,63 +247,19 @@ void loop() {
         uint8_t completedProfiles = 0;
 
         if (ack && motionController.motionAllowed()) {
-            const RuntimeProfileConfig& profileConfig = profileManager.config();
-            Debug.println("Mission: starting vertical profiles");
-
-            profileManager.resetEEPROM();
-            profileManager.logDeploymentPacket();
-
-            while (completedProfiles < profileConfig.profileCount && motionController.motionAllowed()) {
-                profileManager.beginProfile(completedProfiles + 1);
-                Debug.printf("Profile %d: PID descent to %.2f m bottom reference\n",
-                             completedProfiles + 1, profileConfig.descentTargetM);
-                profileManager.measure(profileConfig.descentTargetM,
-                                       profileConfig.holdTimeS,
-                                       profileConfig.descentTimeoutS);
-                if (!motionController.motionAllowed()) {
-                    aborted = true;
-                    break;
-                }
-
-                delay(500);
-
-                Debug.printf("Profile %d: PID ascent to %.2f m top reference\n",
-                             completedProfiles + 1, profileConfig.ascentTargetM);
-                profileManager.measure(profileManager.ascentTargetBottomM(),
-                                       profileConfig.holdTimeS,
-                                       profileConfig.ascentTimeoutS);
-                if (!motionController.motionAllowed()) {
-                    aborted = true;
-                    break;
-                }
-
-                motor.disableOutputs();
-                completedProfiles++;
-                Debug.printf("Profile %d complete\n", completedProfiles);
-                delay(500);
-            }
-
-            if (g_autoCommitted && completedProfiles >= profileConfig.profileCount) {
+            aborted = runVerticalProfiles(completedProfiles);
+            if (g_autoCommitted &&
+                completedProfiles >= profileManager.config().profileCount) {
                 g_autoMissionDone = true;
             }
         }
 
-        // Auto-recovery: senza telemetria, un emergency stop lascerebbe il
-        // float bloccato sul fondo col LED rosso e ogni comando successivo
-        // rifiutato da motionAllowed(). Logghiamo l'evento per il post-mortem
-        // e tentiamo un homing, che cancella l'emergency stop e riporta la
-        // siringa in posizione nota (galleggiamento), così il float risale e
-        // resta pronto per un nuovo GO.
+        // Auto-recovery: senza telemetria, un emergency stop lascerebbe il float
+        // bloccato sul fondo col LED rosso e ogni comando successivo rifiutato da
+        // motionAllowed(). Il record emergency_stop è già su flash; qui un homing
+        // cancella lo stop e riporta la siringa a galleggiamento, pronto per un GO.
         if (aborted) {
-            Debug.println("Profile aborted by emergency stop — attempting auto-recovery");
-            // Il record emergency_stop (reason + tof) è già stato scritto sul
-            // flash da emergencyStop() nell'istante dello stop: qui non serve
-            // ri-loggare. Tentiamo solo l'auto-recovery.
-            if (motionController.homeWithTof()) {
-                Debug.println("Auto-recovery homing complete — float ready");
-            } else {
-                Debug.println("Auto-recovery homing FAILED — float remains in error");
-            }
+            attemptAutoRecovery();
         }
 
         g_status = CMD_IDLE;
@@ -631,6 +589,16 @@ void loop() {
 //                                       max 60 s (esci a regime), log a 10 Hz
 //   SURFACE_OFFSET <m>                — target di galleggiamento: il top del
 //                                       float sta a <m> sotto il pelo (default 0.10)
+//   SIM_ON / SIM_OFF                  — simulatore barometro on/off. Il motore si
+//                                       muove DAVVERO; la quota è simulata da un
+//                                       modello fisico mosso dalla siringa. Poi usa
+//                                       PID_STEP/PID_HOLD/GO per tarare il PID a secco.
+//   SIM_GET                           — stato e parametri del simulatore
+//   SIM_CONFIG <uNeutral> <accelGain> <dragQuad> <poolDepth>
+//                                      — ritara la fisica del simulatore a runtime
+//   GO                                — lancia la missione completa (profili +
+//                                       sosta) da seriale, senza GUI/ESPB. Con SIM
+//                                       attivo = test end-to-end al banco a secco.
 //
 // Tutto il logging finisce su Serial (USB), formato CSV per facile import.
 // ---------------------------------------------------------------------------
@@ -696,6 +664,44 @@ static void servicePidTuningSerial() {
                 if (!a) { Debug.println("ERR: SURFACE_OFFSET <m>"); return; }
                 sensors.setSurfaceTargetOffset(atof(a));
                 Debug.printf("OK SURFACE_OFFSET %.3f m\n", sensors.surfaceTargetOffset());
+            } else if (strcmp(tok, "SIM_ON") == 0) {
+                sensors.simEnable(true);
+                Debug.println("OK SIM_ON (barometro simulato, motore reale)");
+            } else if (strcmp(tok, "SIM_OFF") == 0) {
+                sensors.simEnable(false);
+                Debug.println("OK SIM_OFF");
+            } else if (strcmp(tok, "SIM_GET") == 0) {
+                char buf[176];
+                sensors.simFormatStatus(buf, sizeof(buf));
+                Debug.println(buf);
+            } else if (strcmp(tok, "SIM_CONFIG") == 0) {
+                char* values[4] = {};
+                for (char*& value : values) {
+                    value = strtok(nullptr, " ");
+                    if (!value) {
+                        Debug.println("ERR: SIM_CONFIG <uNeutral> <accelGain> <dragQuad> <poolDepth>");
+                        return;
+                    }
+                }
+                sensors.simConfigure(atof(values[0]), atof(values[1]),
+                                     atof(values[2]), atof(values[3]));
+                Debug.println("OK SIM_CONFIG");
+            } else if (strcmp(tok, "GO") == 0) {
+                // Lancia la missione completa (profileCount profili + sosta)
+                // direttamente da seriale, senza GUI/ESPB: utile col SIM per il
+                // test end-to-end al banco. Bloccante fino a fine missione;
+                // per fermarla prima resetta ESPA.
+                if (!motionController.motionAllowed()) {
+                    Debug.println("ERR: GO — motion not allowed (serve homing ok)");
+                    return;
+                }
+                Debug.println("# GO: missione completa (profili + sosta). Reset ESPA per abortire.");
+                uint8_t completed = 0;
+                const bool aborted = runVerticalProfiles(completed);
+                if (aborted) attemptAutoRecovery();
+                Debug.printf("# GO done: %u/%u profili%s\n",
+                             completed, profileManager.config().profileCount,
+                             aborted ? " (ABORT)" : "");
             } else if (strcmp(tok, "DUMP_LOG") == 0) {
                 // Dump del flash log su richiesta: risolve il caso in cui il
                 // serial monitor si collega dopo il dump automatico nel setup().
@@ -864,4 +870,68 @@ static void runPidStep(float depthTarget) {
     Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
 
     runPidLoop(depthTarget, 60000UL, 100);
+}
+
+// ---------------------------------------------------------------------------
+// Missione completa: profileCount profili (discesa→hold→risalita→hold) + sosta
+// finale. Riusata dal case CMD_GO (GUI/ESP-NOW/auto) e dal comando seriale
+// diretto "GO" (test al banco / simulatore). Ritorna true se abortita da
+// emergency stop; scrive in completedProfiles il numero di profili conclusi.
+static bool runVerticalProfiles(uint8_t& completedProfiles) {
+    completedProfiles = 0;
+    bool aborted = false;
+    const RuntimeProfileConfig& profileConfig = profileManager.config();
+    Debug.println("Mission: starting vertical profiles");
+
+    profileManager.resetEEPROM();
+    profileManager.logDeploymentPacket();
+
+    while (completedProfiles < profileConfig.profileCount && motionController.motionAllowed()) {
+        profileManager.beginProfile(completedProfiles + 1);
+        Debug.printf("Profile %d: PID descent to %.2f m bottom reference\n",
+                     completedProfiles + 1, profileConfig.descentTargetM);
+        profileManager.measure(profileConfig.descentTargetM,
+                               profileConfig.holdTimeS,
+                               profileConfig.descentTimeoutS);
+        if (!motionController.motionAllowed()) { aborted = true; break; }
+
+        delay(500);
+
+        Debug.printf("Profile %d: PID ascent to %.2f m top reference\n",
+                     completedProfiles + 1, profileConfig.ascentTargetM);
+        profileManager.measure(profileManager.ascentTargetBottomM(),
+                               profileConfig.holdTimeS,
+                               profileConfig.ascentTimeoutS);
+        if (!motionController.motionAllowed()) { aborted = true; break; }
+
+        motor.disableOutputs();
+        completedProfiles++;
+        Debug.printf("Profile %d complete\n", completedProfiles);
+        delay(500);
+    }
+
+    // Sosta finale: tieni la CIMA del float a surfaceRestOffsetM sotto il pelo
+    // (antenna sommersa) finché non arriva il recupero o scade la finestra —
+    // evita di rompere la superficie (penalità) in attesa dell'ROV.
+    if (!aborted && motionController.motionAllowed()) {
+        Debug.printf("Mission: surface rest, top at %.2f m below surface\n",
+                     profileConfig.surfaceRestOffsetM);
+        profileManager.measure(profileManager.restTargetBottomM(),
+                               profileConfig.holdTimeS,
+                               REST_WINDOW_S);
+        if (!motionController.motionAllowed()) aborted = true;
+    }
+
+    return aborted;
+}
+
+// Auto-recovery su abort: l'homing cancella l'emergency stop e riporta la siringa
+// in posizione nota (galleggiamento), così il float risale e resta pronto.
+static void attemptAutoRecovery() {
+    Debug.println("Profile aborted by emergency stop — attempting auto-recovery");
+    if (motionController.homeWithTof()) {
+        Debug.println("Auto-recovery homing complete — float ready");
+    } else {
+        Debug.println("Auto-recovery homing FAILED — float remains in error");
+    }
 }

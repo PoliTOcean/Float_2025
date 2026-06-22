@@ -27,7 +27,9 @@ ProfileManager::ProfileManager() {}
 
 namespace {
 constexpr uint32_t PROFILE_CONFIG_MAGIC = 0x50464C54UL; // "PFLT"
-constexpr uint16_t PROFILE_CONFIG_VERSION = 1;
+// v2: surfaceRestOffsetM default 0.10 -> 0.15 (antenna sommersa). Il bump
+// invalida la config NVS stantia così il nuovo default da config.h viene ricaricato.
+constexpr uint16_t PROFILE_CONFIG_VERSION = 2;
 constexpr char PROFILE_CONFIG_NAMESPACE[] = "float_profile";
 constexpr char PROFILE_CONFIG_KEY[] = "cfg";
 
@@ -78,6 +80,13 @@ float ProfileManager::ascentTargetBottomM() const {
     // ascentTargetM e' riferito al TOP del float; il PID lavora in riferimento
     // FONDO (come il sensore), quindi convertiamo aggiungendo la geometria.
     return _config.ascentTargetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
+}
+
+// ---------------------------------------------------------------------------
+float ProfileManager::restTargetBottomM() const {
+    // surfaceRestOffsetM e' la quota del TOP del float sotto il pelo a riposo;
+    // convertita in riferimento FONDO come ascentTargetBottomM().
+    return _config.surfaceRestOffsetM + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +275,10 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
     const bool isPIDPhase      = !isSurfaceTarget && !isBottomTarget;
     const bool isDeepTarget    = fabsf(targetDepth - _config.descentTargetM) < 0.001f;
     const bool isShallowTarget = fabsf(targetDepth - ascentTargetBottomM()) < 0.001f;
+    // Sosta finale: hold PID al target di riposo che NON termina al raggiungimento
+    // dell'hold ma resta attivo finché non arriva il recupero (remote stop) o
+    // scade timeoutSec — così il float non risale e non rompe la superficie.
+    const bool isRestTarget    = fabsf(targetDepth - restTargetBottomM()) < 0.001f;
 
     // --- LED and initial motor positioning ---
     if (isPIDPhase) {
@@ -324,14 +337,14 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
         const char* phase = "descending";
 
         if (isPIDPhase) {
-            if (isShallowTarget) {
-                phase = (fabsf(currentDepth - targetDepth) < _config.depthToleranceM)
-                        ? "hold_40cm"
-                        : "ascending";
+            const bool atTarget =
+                fabsf(currentDepth - targetDepth) < _config.depthToleranceM;
+            if (isRestTarget) {
+                phase = atTarget ? "rest_surface" : "resting";
+            } else if (isShallowTarget) {
+                phase = atTarget ? "hold_40cm" : "ascending";
             } else {
-                phase = (fabsf(currentDepth - targetDepth) < _config.depthToleranceM)
-                        ? "hold_2_5m"
-                        : "descending";
+                phase = atTarget ? "hold_2_5m" : "descending";
             }
         } else if (isSurfaceTarget) {
             // Riferimento: top del float a `surfaceTargetOffset` sotto il pelo.
@@ -427,7 +440,10 @@ void ProfileManager::measure(float targetDepth, float holdTimeSec, float timeout
                 // Seven 5-second packets span the required 30-second hold.
                 const int requiredTicks =
                     static_cast<int>(holdTimeSec * 1000.0f / PERIOD_EEPROM_WRITE) + 1;
-                if (stableCount >= requiredTicks) {
+                // La sosta finale (isRestTarget) NON esce all'hold completo: resta
+                // attiva finché non arriva il recupero (remote stop) o scade il
+                // timeout, così la cima resta sotto il pelo in attesa dell'ROV.
+                if (!isRestTarget && stableCount >= requiredTicks) {
                     Debug.println("Profile: PID hold complete — target depth sustained");
                     _logProfileReading("exit_hold_ok");
                     break;

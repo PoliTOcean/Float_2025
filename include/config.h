@@ -42,7 +42,7 @@ constexpr float MOTOR_REVS_PER_MM =
 constexpr float MOTOR_STEPS_PER_MM =
     MOTOR_STEPS_PER_REV * MOTOR_MICROSTEP * MOTOR_REVS_PER_MM;
 
-constexpr float    MOTOR_TRAVEL_MM       = 35.0f; // Normal commanded syringe travel (mm)
+constexpr float    MOTOR_TRAVEL_MM       = 45.0f; // Normal commanded syringe travel (mm)
 constexpr uint32_t MOTOR_MAX_STEPS       = static_cast<uint32_t>(MOTOR_TRAVEL_MM *
 																 MOTOR_STEPS_PER_MM + 0.5f);
 constexpr uint32_t MOTOR_MAX_SPEED       = 1400;  // Normal operating speed (steps/s)
@@ -145,12 +145,18 @@ constexpr uint16_t PID_PERIOD_DEFAULT_MS  = 50;    // Default tick PID (ms)
 //  - Kp=2.0 Kd=0.13: il float si muoveva ma OSCILLAVA (±15cm, pompaggio) —
 //    Kp troppo alto e Kd insufficiente per un sistema lento come il float.
 //  - Kp=1.0 Kd=0.5: smorzato ma si "sedeva" in superficie (ripresa debole).
-//  - Kp=1.7 Ki=0.1 Kd=0.3 (attuale): converge sul target con oscillazione
-//    finale ±1cm. Il Ki vince l'offset di galleggiamento (ripresa), Kd smorza.
+//  - Kp=1.7 Ki=0.1 Kd=0.3: converge sul target con oscillazione finale ±1cm.
+//  - Kp=1.0 Kd=2.0 (dump 2026-06-19): in discesa il float sfonda il target di
+//    ~0.7 m (picco 2.22 m con target 1.5). Dal log ad alta risoluzione il
+//    problema NON è u saturo a fondo corsa (u sale gradualmente, max ~0.93, poi
+//    scende da solo): è INERZIA idrodinamica — u è già a 0 ma il float continua
+//    ad affondare per il momento accumulato. Serve frenare PRIMA, quindi più Kd.
+//  - Kp=0.5 Kd=3.0 (attuale): meno spinta proporzionale in discesa + freno
+//    derivativo più deciso, per anticipare l'arresto e contenere l'overshoot.
 //    Affinare ancora a runtime con PID_CONFIG_SET se serve.
-constexpr float    PID_KP_DEFAULT         = 1.7f;  // frazione_corsa / m
+constexpr float    PID_KP_DEFAULT         = 0.5f;  // frazione_corsa / m
 constexpr float    PID_KI_DEFAULT         = 0.1f;  // frazione_corsa / (m·s)
-constexpr float    PID_KD_DEFAULT         = 0.3f;  // frazione_corsa / (m/s)
+constexpr float    PID_KD_DEFAULT         = 3.0f;  // frazione_corsa / (m/s)
 constexpr float    PID_INTEGRAL_LIMIT     = 5.0f;  // m·s (bound conservativo)
 constexpr float    PID_ALPHA_D_DEFAULT    = 0.25f; // LPF IIR coeff per derivata
 constexpr float    PID_U_NEUTRAL          = 0.011f;// kick-start offset (~500/47100)
@@ -165,16 +171,21 @@ constexpr float    PID_DESCENT_KICK_U     = 0.15f;
 // ---------------------------------------------------------------------------
 // FLOAT PHYSICAL / MISSION CONSTANTS
 // ---------------------------------------------------------------------------
-constexpr float    FLOAT_LENGTH         = 0.51f;  // Bottom-to-sensor height (m)
+constexpr float    FLOAT_LENGTH         = 0.49f;  // Bottom-to-sensor height (m): corpo 48 cm + barometro 1 cm sopra il tappo
 constexpr float    SENSOR_TO_BOTTOM_M   = FLOAT_LENGTH; // Pressure sensor to bottom reference
-// Geometric offset between physical top of the float and the barometer.
-// The Bar02 sits at the top, so this is ~0 m; calibrate on hardware if needed.
-constexpr float    FLOAT_TOP_TO_SENSOR_M = 0.0f;
+// Vertical offset of the physical top of the float relative to the barometer,
+// signed so that topDepth = sensorDepth - SENSOR_TO_TOP_M (see sensors.cpp).
+// Positive = top is BELOW the sensor; negative = top is ABOVE the sensor.
+// Misurato in hardware: il Bar02 sporge 1 cm SOPRA la cima del float, quindi la
+// cima è 1 cm più in profondità del sensore → offset NEGATIVO (-0.01 m).
+constexpr float    FLOAT_TOP_TO_SENSOR_M = -0.01f;
 constexpr float    SENSOR_TO_TOP_M       = FLOAT_TOP_TO_SENSOR_M;
 // Operational target: how deep the *top* of the float should sit below the
-// water surface when the float is "floating". Runtime-tunable via
+// water surface when the float is "floating"/resting. Runtime-tunable via
 // CMD_SET_SURFACE_OFFSET / USB SURFACE_OFFSET command — this is the default.
-constexpr float    SURFACE_TARGET_OFFSET_M = 0.10f;
+// 0.15 m tiene l'antenna (~12 cm sopra il tappo) sommersa di qualche cm a riposo,
+// così il float non rompe la superficie (penalità -5 punti) in attesa del recupero.
+constexpr float    SURFACE_TARGET_OFFSET_M = 0.15f;
 constexpr float    DEPTH_EPSILON       = 0.01f;  // "Stationary" tolerance (m)
 
 constexpr uint8_t  PROFILE_MAX_COUNT   = 2;      // Profiles before auto-stop
@@ -184,6 +195,9 @@ constexpr float    TARGET_SHALLOW_TOP_DEPTH = 0.40f; // Shallow hold: top refere
 constexpr float    STAT_TIME           = 30.0f;  // MATE hold time at target (s)
 constexpr float    TIMEOUT_PID_TIME    = 180.0f; // Max PID phase time (s)
 constexpr float    TIMEOUT_ASCENT      = 120.0f; // Max ascent + shallow hold time (s)
+// Sosta finale sotto il pelo (top a SURFACE_TARGET_OFFSET_M) dopo i due profili:
+// tiene attivo il PID finché il float non viene recuperato (o scade la finestra).
+constexpr float    REST_WINDOW_S       = 120.0f; // Active surface-rest hold window (s)
 
 constexpr float    TARGET_SHALLOW_BOTTOM_DEPTH =
     TARGET_SHALLOW_TOP_DEPTH + SENSOR_TO_BOTTOM_M + SENSOR_TO_TOP_M;
@@ -199,6 +213,27 @@ constexpr float    WATER_DENSITY_FRESH = 997.0f;   // kg/m³
 constexpr float    GRAVITY             = 9.80665f;
 
 // ---------------------------------------------------------------------------
+// FLOAT SIMULATOR (HIL da banco: motore reale, barometro SIMULATO)
+// ---------------------------------------------------------------------------
+// Con SIM attivo le letture Bar02 sono sostituite da un modello fisico 2° ordine:
+// la siringa (u = motorPosToU(motor.position())) genera spinta netta, la quota
+// del SENSORE viene integrata con inerzia idrodinamica e drag quadratico:
+//   a = SIM_ACCEL_GAIN*(u - SIM_U_NEUTRAL) - SIM_DRAG_QUAD*v*|v|
+//   v += a*dt ;  z += v*dt
+// Convenzione coerente col resto del firmware: u > neutral => affonda (z cresce).
+// Tutti i parametri sono ritarabili a runtime con SIM_CONFIG senza riflashare.
+// Default tarati con la simulazione offline del loop chiuso (PID + motore lento
+// ~2 mm/s + modello): a uNeutral=0.35 la discesa converge ~2.5 m con overshoot
+// ~0.28 m (realistico, sink-biased come il float vero) e l'effetto di Kd è ben
+// visibile. RITARALI sul TUO float con SIM_CONFIG: uNeutral = u a cui la siringa
+// regge la quota senza muoversi (lo vedi col valore di u a regime in PID_HOLD).
+constexpr float    SIM_U_NEUTRAL   = 0.35f; // u di galleggiamento neutro (net buoyancy = 0)
+constexpr float    SIM_ACCEL_GAIN  = 0.05f; // accelerazione [m/s^2] per unità di (u - neutral)
+constexpr float    SIM_DRAG_QUAD   = 1.50f; // coeff. drag quadratico [1/m]
+constexpr float    SIM_POOL_DEPTH  = 3.00f; // profondità vasca simulata [m] (vasca NRC ~3 m)
+constexpr float    SIM_MAX_DT_S    = 0.20f; // clamp dt integrazione per stabilità [s]
+
+// ---------------------------------------------------------------------------
 // NETWORK / OTA
 // ---------------------------------------------------------------------------
 constexpr char     WIFI_SSID[]         = "PIPO";
@@ -212,7 +247,7 @@ constexpr uint8_t ESPNOW_CHANNEL = 1;
 // ---------------------------------------------------------------------------
 // EEPROM / DATA
 // ---------------------------------------------------------------------------
-constexpr char     COMPANY_NUMBER[]     = "EX10";
+constexpr char     COMPANY_NUMBER[]     = "EX12";
 constexpr char     FLASH_LOG_PATH[]     = "/mission/current_profile.csv";
 
 // EEPROM_SIZE and sensor_data struct come from float_common.h

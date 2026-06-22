@@ -679,6 +679,39 @@ All commands in the FLOAT Commands table can be sent over the ESPB USB serial br
 | `PID_HOLD <depth_m> <dur_s>` | Hold PID at `depth_m` for `dur_s` seconds, log at 5 Hz (command 16) |
 | `PID_STEP <depth_m>` | Step response: PID at `depth_m` for up to 60 s, log at 10 Hz (command 17) |
 | `SURFACE_OFFSET <m>` | Set the surface target offset (`SURFACE_TARGET_OFFSET_M`) at runtime (command 18) |
+| `SIM_ON` / `SIM_OFF` | Enable/disable the **bench barometer simulator** (the motor still moves for real) |
+| `SIM_GET` | Print simulator state and physics parameters |
+| `SIM_CONFIG <uNeutral> <accelGain> <dragQuad> <poolDepth>` | Retune the simulator physics at runtime |
+| `GO` | Run the full mission (all profiles: descent+hold+ascent+hold, then surface rest) straight from serial, no GUI/ESPB — with `SIM_ON` this is a dry end-to-end bench test (blocking; reset ESPA to abort) |
+
+#### Bench PID Tuning with the Simulator (dry, no water)
+
+`SIM_ON` replaces the Bar02 depth reading with an on-board second-order physics
+model (buoyancy + quadratic drag) driven by the **real syringe position**, so the
+motor moves exactly as in the water but depth is synthetic. Because `sensors.depth()`
+is overridden transparently, `PID_STEP`, `PID_HOLD`, and a full `GO` mission all run
+against the simulated water column with no other changes — let you tune the PID at a
+desk.
+
+Model: `a = accelGain·(u − uNeutral) − dragQuad·v·|v|`, where `u = motorPosToU(motor.position())`
+(`u > uNeutral` ⇒ sinks). Defaults (`config.h` `SIM_*`) reproduce the real float's
+slow actuator (~2 mm/s) and downward overshoot; **set `uNeutral` to your float's
+real neutral** (the steady-state `u` you observe in a `PID_HOLD` run) for faithful tuning.
+
+Typical loop (over ESPA USB serial, 115200 baud):
+
+```text
+SIM_ON                                     # enable simulator (motor still moves)
+SIM_CONFIG 0.35 0.05 1.5 3.0               # optional: match your float's physics
+PID_CONFIG_SET 0.5 0.1 3.0 50 0.25 5 0.001 0.011
+PID_STEP 2.5                               # watch the CSV: t_ms,depth,target,error,u,motor_pos
+PID_CONFIG_SET 0.5 0.1 6.0 50 0.25 5 0.001 0.011   # e.g. raise Kd to cut overshoot
+PID_STEP 2.5                               # compare
+SIM_OFF                                    # back to the real barometer
+```
+
+The same serial CSV feeds `tools/pid_tuning/pid_tuning.ipynb` for overshoot/settling
+metrics and gain suggestions.
 
 ### CLI Tests
 
