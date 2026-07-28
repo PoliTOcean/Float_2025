@@ -53,3 +53,15 @@ dkms.conf
 .pio
 .vscode
 **/.DS_Store
+
+# MATLAB / Simulink build artifacts (rigenerabili: si versionano solo i sorgenti
+# .slx / .m / .md, non l'output di code-gen di Embedded Coder ne' le cache)
+slprj/
+*.slxc
+*.autosave
+*.slx.autosave
+*.asv
+*.mex*
+*_ert_rtw/
+*_grt_rtw/
+codegen/

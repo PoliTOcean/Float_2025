@@ -1,0 +1,53 @@
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img" font-family="Segoe UI, Arial, sans-serif">
+  <title>HOMING - sottostati</title>
+  <desc>Sequenza APPROACH, RETRACT, BACKOFF verso IDLE, con timeout verso SAFE_STOP.</desc>
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#56617a"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#b5443c"/></marker>
+  </defs>
+  <rect x="0" y="0" width="900" height="300" fill="#f6f8fb"/>
+  <rect x="1" y="1" width="898" height="298" fill="none" stroke="#d4dbe6"/>
+  <text x="30" y="34" font-size="18" font-weight="700" fill="#17273f">HOMING ▸  (motore/TOF reali)</text>
+
+  <!-- SAFE_STOP (timeout) -->
+  <rect x="350" y="40" width="210" height="40" rx="8" fill="#f8e1df" stroke="#b5443c" stroke-width="1.8"/>
+  <text x="455" y="65" text-anchor="middle" font-size="13" font-weight="600" fill="#5b1f1b">SAFE_STOP</text>
+  <polyline points="300,138 300,60 350,60" fill="none" stroke="#b5443c" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#arrR)"/>
+  <text x="150" y="55" font-size="12" fill="#b5443c" font-family="Consolas, monospace">[st_home_t &gt; homing_timeout]</text>
+
+  <!-- initial dot -->
+  <circle cx="26" cy="167" r="6" fill="#33415c"/>
+  <line x1="32" y1="167" x2="55" y2="167" stroke="#56617a" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- states -->
+  <g font-size="14" font-weight="600" fill="#17273f">
+    <rect x="55" y="138" width="160" height="58" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="135" y="164" text-anchor="middle">H_APPROACH</text>
+    <text x="135" y="182" text-anchor="middle" font-size="11" font-weight="400" fill="#5a6472">JOG − (verso TOF)</text>
+
+    <rect x="290" y="138" width="160" height="58" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="370" y="164" text-anchor="middle">H_RETRACT</text>
+    <text x="370" y="182" text-anchor="middle" font-size="11" font-weight="400" fill="#5a6472">JOG + (via dal TOF)</text>
+
+    <rect x="525" y="138" width="160" height="58" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="605" y="164" text-anchor="middle">H_BACKOFF</text>
+    <text x="605" y="182" text-anchor="middle" font-size="11" font-weight="400" fill="#5a6472">GOTO pos+margine</text>
+
+    <rect x="760" y="140" width="110" height="54" rx="9" fill="#dff0e6" stroke="#3a915f" stroke-width="1.8"/>
+    <text x="815" y="172" text-anchor="middle" fill="#1e4d33">IDLE</text>
+  </g>
+
+  <!-- transitions -->
+  <g stroke="#56617a" stroke-width="1.6" fill="none">
+    <line x1="215" y1="167" x2="290" y2="167" marker-end="url(#arr)"/>
+    <line x1="450" y1="167" x2="525" y2="167" marker-end="url(#arr)"/>
+    <line x1="685" y1="167" x2="760" y2="167" marker-end="url(#arr)"/>
+  </g>
+  <g font-size="11.5" fill="#40495c" font-family="Consolas, monospace" text-anchor="middle">
+    <text x="252" y="150">[tof&lt;approach ×2]</text>
+    <text x="252" y="222">{STOP}</text>
+    <text x="487" y="150">[tof&gt;thresh ×2]</text>
+    <text x="722" y="150">[~motor_busy]</text>
+    <text x="722" y="222">{zero pos}</text>
+  </g>
+</svg>

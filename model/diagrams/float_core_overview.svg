@@ -1,0 +1,66 @@
+<svg viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" role="img" font-family="Segoe UI, Arial, sans-serif">
+  <title>float_core - livello superiore</title>
+  <desc>Superstato RUN con INIT, HOMING, IDLE, MISSION e lo stato SAFE_STOP esterno, con le transizioni.</desc>
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#56617a"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#b5443c"/></marker>
+  </defs>
+  <rect x="0" y="0" width="900" height="560" fill="#f6f8fb"/>
+  <rect x="1" y="1" width="898" height="558" fill="none" stroke="#d4dbe6"/>
+  <text x="30" y="38" font-size="20" font-weight="700" fill="#17273f">float_core — chart Stateflow (livello superiore)</text>
+  <text x="30" y="58" font-size="12.5" fill="#5a6472">Ts = 0.05 s · un tick = un passo del modello (= float_core_step)</text>
+
+  <!-- RUN container -->
+  <rect x="40" y="80" width="540" height="450" rx="14" fill="#ffffff" stroke="#9aa7bb" stroke-dasharray="6 4"/>
+  <text x="58" y="104" font-size="14" font-weight="700" fill="#6b7688">RUN</text>
+
+  <!-- initial dot -->
+  <circle cx="290" cy="103" r="6" fill="#33415c"/>
+  <line x1="290" y1="109" x2="290" y2="123" stroke="#56617a" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- states -->
+  <g font-size="15" font-weight="600" fill="#17273f">
+    <rect x="205" y="123" width="170" height="46" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="290" y="151" text-anchor="middle">INIT</text>
+
+    <rect x="205" y="210" width="170" height="46" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="2.4"/>
+    <rect x="205" y="210" width="7" height="46" rx="3" fill="#4372b8"/>
+    <text x="292" y="238" text-anchor="middle">HOMING ▸</text>
+
+    <rect x="205" y="305" width="170" height="46" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="290" y="333" text-anchor="middle">IDLE</text>
+
+    <rect x="205" y="435" width="170" height="46" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="2.4"/>
+    <rect x="205" y="435" width="7" height="46" rx="3" fill="#4372b8"/>
+    <text x="292" y="463" text-anchor="middle">MISSION ▸</text>
+
+    <rect x="650" y="272" width="200" height="64" rx="10" fill="#f8e1df" stroke="#b5443c" stroke-width="2"/>
+    <text x="750" y="304" text-anchor="middle" fill="#5b1f1b">SAFE_STOP</text>
+    <text x="750" y="322" text-anchor="middle" font-size="11" font-weight="400" fill="#8a4b45">motore STOP · LED rosso</text>
+  </g>
+
+  <!-- transitions -->
+  <g stroke="#56617a" stroke-width="1.6" fill="none">
+    <line x1="290" y1="169" x2="290" y2="210" marker-end="url(#arr)"/>
+    <line x1="290" y1="256" x2="290" y2="305" marker-end="url(#arr)"/>
+    <line x1="262" y1="351" x2="262" y2="435" marker-end="url(#arr)"/>
+    <line x1="320" y1="435" x2="320" y2="351" marker-end="url(#arr)"/>
+    <polyline points="205,335 150,335 150,225 205,225" marker-end="url(#arr)"/>
+    <polyline points="580,300 650,300" marker-end="url(#arr)"/>
+  </g>
+  <!-- recovery (red) -->
+  <polyline points="750,336 750,505 122,505 122,232 205,232" fill="none" stroke="#b5443c" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#arrR)"/>
+
+  <!-- guard labels -->
+  <g font-size="12" fill="#40495c" font-family="Consolas, monospace">
+    <text x="300" y="286">[homing ok]</text>
+    <text x="254" y="395" text-anchor="end">[event==GO]</text>
+    <text x="328" y="397">[mission done]</text>
+    <text x="150" y="360" text-anchor="middle">[event==HOME]</text>
+    <text x="615" y="290" text-anchor="middle">[event==STOP]</text>
+    <text x="615" y="277" text-anchor="middle">[req_safe]</text>
+  </g>
+  <g font-size="12" fill="#b5443c" font-family="Consolas, monospace">
+    <text x="430" y="522" text-anchor="middle">[home_after || event==HOME]  (auto-recovery)</text>
+  </g>
+</svg>

@@ -113,7 +113,10 @@ constexpr uint8_t  TOF_SAFETY_STOP_SAMPLES  = 3;
 // (un MIN>0 lasciava il float troppo galleggiante e nascondeva la dinamica
 // reale agli u bassi). Il MAX resta sotto 1.0 per margine verso la soglia TOF
 // in piena estensione.
-constexpr float    PID_U_MIN                = 0.0f;
+// PID_U_MIN tarato in MIL (model/) a 0.20: NON svuotare del tutto la siringa in
+// risalita limita la spinta verso l'alto e riduce l'overshoot che rompeva la
+// superficie. Era 0.0 (svuotamento completo → risalita troppo veloce, sfondava).
+constexpr float    PID_U_MIN                = 0.20f;
 constexpr float    PID_U_MAX                = 0.92f;
 
 // ---------------------------------------------------------------------------
@@ -191,7 +194,10 @@ constexpr float    DEPTH_EPSILON       = 0.01f;  // "Stationary" tolerance (m)
 constexpr uint8_t  PROFILE_MAX_COUNT   = 2;      // Profiles before auto-stop
 constexpr float    DEPTH_MAX_ERROR     = 0.33f;  // MATE depth tolerance (m)
 constexpr float    TARGET_DEPTH        = 2.50f;  // Deep hold: bottom reference (m)
-constexpr float    TARGET_SHALLOW_TOP_DEPTH = 0.40f; // Shallow hold: top reference (m)
+// Tarato in MIL (model/) a 0.65 m: tenere la cima piu' in basso (dentro la
+// tolleranza MATE 0.40 +/- 0.33 = [0.07, 0.73]) lascia margine all'overshoot di
+// risalita cosi' il float non rompe la superficie (penalita' -5). Era 0.40.
+constexpr float    TARGET_SHALLOW_TOP_DEPTH = 0.65f; // Shallow hold: top reference (m)
 constexpr float    STAT_TIME           = 30.0f;  // MATE hold time at target (s)
 constexpr float    TIMEOUT_PID_TIME    = 180.0f; // Max PID phase time (s)
 constexpr float    TIMEOUT_ASCENT      = 120.0f; // Max ascent + shallow hold time (s)
