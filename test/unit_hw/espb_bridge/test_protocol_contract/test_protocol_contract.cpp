@@ -22,19 +22,19 @@ void tearDown() {}
 void test_protocol_contract_table_matches_parser() {
     size_t count = 0;
     const EspbProtocolCommand* commands = espbProtocolCommands(count);
-    TEST_ASSERT_EQUAL_UINT8(18, count);
+    TEST_ASSERT_EQUAL_UINT8(23, count);
 
     for (size_t i = 0; i < count; ++i) {
         char commandLine[64];
         switch (commands[i].commandCode) {
-            case CMD_UPDATE_PID:
-                snprintf(commandLine, sizeof(commandLine), "%s 1 2 3", commands[i].commandText);
+            case CMD_PID_CONFIG_SET:
+                snprintf(commandLine, sizeof(commandLine), "%s 1 2 3 50 0.25 5 0.001 0.011", commands[i].commandText);
                 break;
-            case CMD_UPDATE_PID_EXT:
-                snprintf(commandLine, sizeof(commandLine), "%s 50 0.25", commands[i].commandText);
+            case CMD_BALANCE_CONFIG_SET:
+                snprintf(commandLine, sizeof(commandLine), "%s 5000 5 3 50", commands[i].commandText);
                 break;
-            case CMD_SET_SPEED:
-                snprintf(commandLine, sizeof(commandLine), "%s 300", commands[i].commandText);
+            case CMD_MOTOR_CONFIG_SET:
+                snprintf(commandLine, sizeof(commandLine), "%s 1800 1800 1200 300", commands[i].commandText);
                 break;
             case CMD_TEST_STEPS:
                 snprintf(commandLine, sizeof(commandLine), "%s -100", commands[i].commandText);
@@ -51,6 +51,9 @@ void test_protocol_contract_table_matches_parser() {
             case CMD_SET_SURFACE_OFFSET:
                 snprintf(commandLine, sizeof(commandLine), "%s 0.10", commands[i].commandText);
                 break;
+            case CMD_PROFILE_SET:
+                snprintf(commandLine, sizeof(commandLine), "%s 2 2.5 0.4 0.33 30 180 120 0.10", commands[i].commandText);
+                break;
             default:
                 snprintf(commandLine, sizeof(commandLine), "%s", commands[i].commandText);
                 break;
@@ -60,7 +63,7 @@ void test_protocol_contract_table_matches_parser() {
         TEST_ASSERT_EQUAL_UINT8_MESSAGE(commandType(EspbParsedCommandType::ForwardToEspA),
                                         commandType(parsed.type),
                                         commands[i].commandText);
-        TEST_ASSERT_EQUAL_UINT8_MESSAGE(commands[i].commandCode,
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(static_cast<uint8_t>(commands[i].commandCode),
                                         parsed.message.command,
                                         commands[i].commandText);
         TEST_ASSERT_NOT_NULL_MESSAGE(commands[i].expectedAck, commands[i].commandText);
@@ -76,17 +79,27 @@ void test_ack_constants_match_gui_contract() {
     TEST_ASSERT_EQUAL_STRING("CMD4_RECVD", CMD4_ACK);
     TEST_ASSERT_EQUAL_STRING("SWITCH_AM_RECVD", CMD5_ACK);
     TEST_ASSERT_EQUAL_STRING("TRY_UPLOAD_RECVD", CMD7_ACK);
-    TEST_ASSERT_EQUAL_STRING("CHNG_PARMS_RECVD", CMD8_ACK);
-    TEST_ASSERT_EQUAL_STRING("TEST_FREQ_RECVD", CMD9_ACK);
+    TEST_ASSERT_EQUAL_STRING("PID_CONFIG_SET_RECVD", CMD8_ACK);
+    TEST_ASSERT_EQUAL_STRING("PID_CONFIG_SET_ERR", CMD8_ERR);
     TEST_ASSERT_EQUAL_STRING("TEST_STEPS_RECVD", CMD10_ACK);
     TEST_ASSERT_EQUAL_STRING("DEBUG_MODE_RECVD", CMD11_ACK);
     TEST_ASSERT_EQUAL_STRING("HOME_RECVD", CMD12_ACK);
     TEST_ASSERT_EQUAL_STRING("STOP_RECVD", CMD13_ACK);
-    TEST_ASSERT_EQUAL_STRING("CHNG_PID_EXT_RECVD", CMD14_ACK);
     TEST_ASSERT_EQUAL_STRING("SYRINGE_SET_RECVD", CMD15_ACK);
     TEST_ASSERT_EQUAL_STRING("PID_HOLD_RECVD", CMD16_ACK);
     TEST_ASSERT_EQUAL_STRING("PID_STEP_RECVD", CMD17_ACK);
     TEST_ASSERT_EQUAL_STRING("SURFACE_OFF_RECVD", CMD18_ACK);
+    TEST_ASSERT_EQUAL_STRING("PROFILE_SET_RECVD", CMD19_ACK);
+    TEST_ASSERT_EQUAL_STRING("PROFILE_SET_ERR", CMD19_ERR);
+    TEST_ASSERT_EQUAL_STRING("BALANCE_CONFIG_SET_RECVD", CMD21_ACK);
+    TEST_ASSERT_EQUAL_STRING("BALANCE_CONFIG_SET_ERR", CMD21_ERR);
+    TEST_ASSERT_EQUAL_STRING("MOTOR_CONFIG_SET_RECVD", CMD23_ACK);
+    TEST_ASSERT_EQUAL_STRING("MOTOR_CONFIG_SET_ERR", CMD23_ERR);
+}
+
+void test_reserved_command_is_not_parseable() {
+    EspbParsedCommand parsed = espbParseSerialCommand("CMD_RESERVED_9");
+    TEST_ASSERT_EQUAL_UINT8(commandType(EspbParsedCommandType::Invalid), commandType(parsed.type));
 }
 
 void test_status_tokens_are_gui_parseable() {
@@ -102,6 +115,7 @@ void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_protocol_contract_table_matches_parser);
     RUN_TEST(test_ack_constants_match_gui_contract);
+    RUN_TEST(test_reserved_command_is_not_parseable);
     RUN_TEST(test_status_tokens_are_gui_parseable);
     UNITY_END();
 }

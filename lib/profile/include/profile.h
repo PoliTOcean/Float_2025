@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include "config.h"
 
 /*
  *******************************************************************************
@@ -11,9 +12,32 @@
  *******************************************************************************
  */
 
+struct RuntimeProfileConfig {
+    uint8_t profileCount = PROFILE_MAX_COUNT;
+    float descentTargetM = TARGET_DEPTH;            // target discesa, riferito al FONDO del float
+    float ascentTargetM = TARGET_SHALLOW_TOP_DEPTH; // target risalita, riferito al TOP del float
+    float depthToleranceM = DEPTH_MAX_ERROR;
+    float holdTimeS = STAT_TIME;
+    float descentTimeoutS = TIMEOUT_PID_TIME;       // timeout assoluto fase discesa (hold incluso)
+    float ascentTimeoutS = TIMEOUT_ASCENT;          // timeout assoluto fase risalita (hold incluso)
+    float surfaceRestOffsetM = SURFACE_TARGET_OFFSET_M; // top del float sotto pelo a riposo
+};
+
 class ProfileManager {
 public:
     ProfileManager();
+
+    // Load runtime profile settings from NVS, falling back to config.h defaults.
+    void beginConfig();
+
+    const RuntimeProfileConfig& config() const { return _config; }
+    float ascentTargetBottomM() const;
+    // Target della sosta finale (top del float a surfaceRestOffsetM sotto il pelo),
+    // convertito in riferimento FONDO come il PID. Vedi ascentTargetBottomM().
+    float restTargetBottomM() const;
+    bool setConfig(const RuntimeProfileConfig& config);
+    bool validateConfig(const RuntimeProfileConfig& config) const;
+    void formatConfigJson(char* buffer, size_t bufferSize) const;
 
     // Reset EEPROM read/write pointers (call before starting a new profile)
     void resetEEPROM();
@@ -45,10 +69,13 @@ private:
     uint8_t  _activeProfileId = 0;
     unsigned long _missionStartMs = 0;
     bool _missionClockRunning = false;
+    RuntimeProfileConfig _config;
 
     void _logReading(float pressure, float temperature);
     void _logProfileReading(const char* phase);
     float _missionTimeS() const;
+    void _saveConfig();
+    void _applyConfigToSubsystems();
 };
 
 // Singleton

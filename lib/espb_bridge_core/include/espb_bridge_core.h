@@ -37,7 +37,7 @@ struct EspbBridgeState {
 
 struct EspbProtocolCommand {
     const char* commandText;
-    uint8_t commandCode;
+    FloatCommand commandCode;
     const char* expectedAck;
 };
 

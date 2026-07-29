@@ -39,17 +39,17 @@
 #include "comms.h"
 #include "profile.h"
 #include "flash_storage.h"
+#include "runtime_config.h"
 
 // ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 static uint8_t  g_status          = CMD_IDLE;
-static uint8_t  g_profileCount    = 0;
 static bool     g_autoModeActive  = false;
 static bool     g_autoCommitted   = false;
+static bool     g_autoMissionDone = false;
 static bool     g_idle            = false;
 static bool     g_debugModeActive = false;
-static uint32_t g_testSpeed       = MOTOR_MAX_SPEED;
 
 // Make debug_mode_active reachable by DebugSerial / comms (extern linkage)
 bool debug_mode_active = false;
@@ -69,6 +69,8 @@ static void servicePidTuningSerial();
 static void runSyringeSet(float uNorm, float durationS);
 static void runPidHold(float depthTarget, float durationS);
 static void runPidStep(float depthTarget);
+static bool runVerticalProfiles(uint8_t& completedProfiles);
+static void attemptAutoRecovery();
 // ---------------------------------------------------------------------------
 // SETUP
 // ---------------------------------------------------------------------------
@@ -98,13 +100,28 @@ void setup() {
                 });
     Debug.println("DebugSerial ready");
 
+    // --- Runtime PID / balance / motor settings ---
+    runtimeConfig.begin();
+
+    // --- Runtime mission profile ---
+    profileManager.beginConfig();
+
     // --- Internal flash mission log ---
+    // LittleFS è persistente al ciclo di alimentazione: al boot il log della
+    // sessione precedente è ancora presente. Lo dumpiamo qui su Serial come
+    // comodità (se il monitor è già connesso), ma NON lo azzeriamo: dopo un
+    // test fallito spesso il monitor si collega in ritardo, quindi il log deve
+    // sopravvivere al power-cycle e restare leggibile con il comando DUMP_LOG.
+    // L'azzeramento avviene solo all'inizio di una nuova missione (resetEEPROM)
+    // o su comando esplicito (CMD_CLEAR_EEPROM). Stampa diretta su Serial (non
+    // Debug) per un CSV pulito, indipendente da debug_mode_active.
     if (flashStorage.begin()) {
-        if (!flashStorage.clearLog()) {
-            Debug.println("WARNING: flash log reset failed");
-        } else {
-            Debug.println("Flash log ready");
+        Serial.println("===== FLASH LOG DUMP (previous session) BEGIN =====");
+        if (!flashStorage.printLogTo(Serial)) {
+            Serial.println("(no previous log or flash unavailable)");
         }
+        Serial.println("===== FLASH LOG DUMP END =====");
+        Debug.println("Flash log ready (use DUMP_LOG to re-read)");
     } else {
         Debug.println("WARNING: flash log unavailable; stored data disabled");
     }
@@ -127,6 +144,7 @@ void setup() {
 
     // --- Motor + homing ---
     motor.begin();
+    runtimeConfig.applyMotorConfig();
 
     Debug.println("Initializing TOF sensor...");
     if (!tofSensor.begin()) {
@@ -202,7 +220,7 @@ void loop() {
                 g_idle = false;
                 ledController.setState(LEDState::COMMUNICATION);
             }
-        } else if (g_profileCount < PROFILE_MAX_COUNT && g_autoModeActive) {
+        } else if (!g_autoMissionDone && g_autoModeActive) {
             // No comms — activate autonomous mode
             Debug.println("No comms — entering auto mode");
             ledController.setState(LEDState::AUTO_MODE);
@@ -217,39 +235,31 @@ void loop() {
     {
         bool ack = g_autoCommitted ? true : comms.sendMessage(CMD1_ACK, 1000);
 
+        // Il comando GO resta inchiodato in _received perché sott'acqua non
+        // arrivano nuovi pacchetti: lo consumiamo subito così non riparte da
+        // solo al ritorno in IDLE e non dipendiamo da g_idle per il clear.
+        comms.clearCommand();
+
+        // true se un profilo è stato interrotto da emergency stop (es. safety
+        // TOF): serve a decidere se tentare l'auto-recovery a fine missione.
+        bool aborted = false;
+        // Dichiarato qui (scope esterno) perché serve anche al blocco aborted.
+        uint8_t completedProfiles = 0;
+
         if (ack && motionController.motionAllowed()) {
-            Debug.println("MATE mission: starting vertical profiles");
-            if (!g_autoCommitted) {
-                g_profileCount = 0;
+            aborted = runVerticalProfiles(completedProfiles);
+            if (g_autoCommitted &&
+                completedProfiles >= profileManager.config().profileCount) {
+                g_autoMissionDone = true;
             }
-            profileManager.resetEEPROM();
-            if (g_profileCount == 0) {
-                profileManager.logDeploymentPacket();
-            }
+        }
 
-            while (g_profileCount < PROFILE_MAX_COUNT && motionController.motionAllowed()) {
-                profileManager.beginProfile(g_profileCount + 1);
-                Debug.printf("Profile %d: PID descent to 2.5 m bottom reference\n",
-                             g_profileCount + 1);
-                profileManager.measure(TARGET_DEPTH, STAT_TIME, TIMEOUT_PID_TIME);
-                if (!motionController.motionAllowed()) {
-                    break;
-                }
-
-                delay(500);
-
-                Debug.printf("Profile %d: PID ascent to 40 cm top reference\n",
-                             g_profileCount + 1);
-                profileManager.measure(TARGET_SHALLOW_BOTTOM_DEPTH, STAT_TIME, TIMEOUT_ASCENT);
-                if (!motionController.motionAllowed()) {
-                    break;
-                }
-
-                motor.disableOutputs();
-                g_profileCount++;
-                Debug.printf("Profile %d complete\n", g_profileCount);
-                delay(500);
-            }
+        // Auto-recovery: senza telemetria, un emergency stop lascerebbe il float
+        // bloccato sul fondo col LED rosso e ogni comando successivo rifiutato da
+        // motionAllowed(). Il record emergency_stop è già su flash; qui un homing
+        // cancella lo stop e riporta la siringa a galleggiamento, pronto per un GO.
+        if (aborted) {
+            attemptAutoRecovery();
         }
 
         g_status = CMD_IDLE;
@@ -269,7 +279,7 @@ void loop() {
     case CMD_BALANCE: // Drive syringe to full extension then retraction
     {
         if (comms.sendMessage(CMD3_ACK, 1000)) {
-            motionController.balance(5000);
+            motionController.balance();
         }
         g_status = CMD_IDLE;
         break;
@@ -280,6 +290,7 @@ void loop() {
     {
         if (comms.sendMessage(CMD4_ACK, 1000)) {
             profileManager.clearEEPROM();
+            g_autoMissionDone = false;
         }
         g_status = CMD_IDLE;
         break;
@@ -290,6 +301,9 @@ void loop() {
     {
         if (comms.sendMessage(CMD5_ACK, 1000)) {
             g_autoModeActive = !g_autoModeActive;
+            if (g_autoModeActive) {
+                g_autoMissionDone = false;
+            }
             Debug.printf("Auto mode: %s\n", g_autoModeActive ? "ON" : "OFF");
             ledController.setState(g_autoModeActive ? LEDState::AUTO_MODE : LEDState::IDLE);
         }
@@ -309,13 +323,15 @@ void loop() {
                  "\"pressure_kpa\":%.2f,"
                  "\"depth_m\":%.2f,"
                  "\"phase\":\"%s\","
-                 "\"sensor_depth_m\":%.2f}",
+                 "\"sensor_depth_m\":%.2f,"
+                 "\"syringe_u\":%.4f}",
                  COMPANY_NUMBER,
                  static_cast<float>(millis()) / 1000.0f,
                  sensors.pressure() / 1000.0f,
                  sensors.referenceDepthForPhase("live"),
                  "live",
-                 sensors.sensorDepth());
+                 sensors.sensorDepth(),
+                 motorPosToU(motor.position()));
 
         comms.sendMessage(packet, 1000);
         Debug.println("Live snapshot sent");
@@ -335,42 +351,32 @@ void loop() {
     }
 
     // -----------------------------------------------------------------------
-    case CMD_UPDATE_PID: // Update PID gains at runtime
+    case CMD_PID_CONFIG_SET:
     {
-        if (comms.sendMessage(CMD8_ACK, 1000)) {
-            pidController.Kp = comms.lastCommand().params[0];
-            pidController.Ki = comms.lastCommand().params[1];
-            pidController.Kd = comms.lastCommand().params[2];
-            Debug.printf("PID updated: Kp=%.3f Ki=%.3f Kd=%.3f\n",
-                         pidController.Kp, pidController.Ki, pidController.Kd);
-        }
+        const output_message cmd = comms.lastCommand();
+        const PidConfigPayload& payload = cmd.payload.pidConfig;
+        RuntimePidConfig nextConfig;
+        nextConfig.kp = payload.kp;
+        nextConfig.ki = payload.ki;
+        nextConfig.kd = payload.kd;
+        nextConfig.periodMs = static_cast<uint16_t>(payload.periodMs);
+        nextConfig.alphaD = payload.alphaD;
+        nextConfig.integralLimit = payload.integralLimit;
+        nextConfig.minRetargetFrac = payload.minRetargetFrac;
+        nextConfig.uNeutral = payload.uNeutral;
+
+        const bool updated = runtimeConfig.setPidConfig(nextConfig);
+        comms.sendMessage(updated ? CMD8_ACK : CMD8_ERR, 1000);
         g_status = CMD_IDLE;
         break;
     }
 
     // -----------------------------------------------------------------------
-    case CMD_UPDATE_PID_EXT: // Update PID period and derivative LPF coefficient
+    case CMD_PID_CONFIG_GET:
     {
-        if (comms.sendMessage(CMD14_ACK, 1000)) {
-            const float periodMs = comms.lastCommand().params[0];
-            const float alphaD   = comms.lastCommand().params[1];
-            pidController.periodMs = (uint16_t)constrain(periodMs, 20.0f, 500.0f);
-            pidController.alphaD   = constrain(alphaD, 0.05f, 1.0f);
-            Debug.printf("PID ext updated: periodMs=%u alphaD=%.3f\n",
-                         pidController.periodMs, pidController.alphaD);
-        }
-        g_status = CMD_IDLE;
-        break;
-    }
-
-    // -----------------------------------------------------------------------
-    case CMD_SET_SPEED: // Set test movement speed
-    {
-        if (comms.sendMessage(CMD9_ACK, 1000)) {
-            uint32_t freq = comms.lastCommand().freq;
-            g_testSpeed   = constrain(freq, 10u, 1200u);
-            Debug.printf("Test speed set to %u steps/s\n", g_testSpeed);
-        }
+        char packet[OUTPUT_LEN];
+        runtimeConfig.formatPidConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
         g_status = CMD_IDLE;
         break;
     }
@@ -379,8 +385,8 @@ void loop() {
     case CMD_TEST_STEPS: // Manual stepper test
     {
         if (comms.sendMessage(CMD10_ACK, 1000)) {
-            long steps = comms.lastCommand().steps;
-            motionController.manualStepTest(steps, g_testSpeed);
+            long steps = comms.lastCommand().payload.testSteps.steps;
+            motionController.manualStepTest(steps, runtimeConfig.motor().testSpeed);
         }
         g_status = CMD_IDLE;
         break;
@@ -428,8 +434,10 @@ void loop() {
     case CMD_SYRINGE_SET: // Test: posiziona siringa a u in [0,1] per N secondi
     {
         if (comms.sendMessage(CMD15_ACK, 1000)) {
-            const float u   = comms.lastCommand().params[0];
-            const float dur = comms.lastCommand().params[1];
+            const output_message cmd = comms.lastCommand();
+            const SyringeSetPayload& payload = cmd.payload.syringeSet;
+            const float u   = payload.uNorm;
+            const float dur = payload.durationS;
             runSyringeSet(u, dur);
         }
         g_status = CMD_IDLE;
@@ -440,8 +448,10 @@ void loop() {
     case CMD_PID_HOLD: // Test: PID a quota fissa per N secondi
     {
         if (comms.sendMessage(CMD16_ACK, 1000)) {
-            const float depth = comms.lastCommand().params[0];
-            const float dur   = comms.lastCommand().params[1];
+            const output_message cmd = comms.lastCommand();
+            const PidHoldPayload& payload = cmd.payload.pidHold;
+            const float depth = payload.depthM;
+            const float dur   = payload.durationS;
             runPidHold(depth, dur);
         }
         g_status = CMD_IDLE;
@@ -452,7 +462,7 @@ void loop() {
     case CMD_PID_STEP: // Test: step response PID a quota X per 60 s
     {
         if (comms.sendMessage(CMD17_ACK, 1000)) {
-            const float depth = comms.lastCommand().params[0];
+            const float depth = comms.lastCommand().payload.pidStep.depthM;
             runPidStep(depth);
         }
         g_status = CMD_IDLE;
@@ -463,8 +473,93 @@ void loop() {
     case CMD_SET_SURFACE_OFFSET: // Imposta target di galleggiamento (m sotto pelo)
     {
         if (comms.sendMessage(CMD18_ACK, 1000)) {
-            sensors.setSurfaceTargetOffset(comms.lastCommand().params[0]);
+            sensors.setSurfaceTargetOffset(comms.lastCommand().payload.surfaceOffset.meters);
         }
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_PROFILE_SET:
+    {
+        const output_message cmd = comms.lastCommand();
+        const ProfileSetPayload& payload = cmd.payload.profileSet;
+        RuntimeProfileConfig nextConfig;
+        nextConfig.profileCount      = payload.profileCount;
+        nextConfig.descentTargetM    = payload.descentTargetM;
+        nextConfig.ascentTargetM     = payload.ascentTargetM;
+        nextConfig.depthToleranceM   = payload.depthToleranceM;
+        nextConfig.holdTimeS         = payload.holdTimeS;
+        nextConfig.descentTimeoutS   = payload.descentTimeoutS;
+        nextConfig.ascentTimeoutS    = payload.ascentTimeoutS;
+        nextConfig.surfaceRestOffsetM = payload.surfaceRestOffsetM;
+
+        const bool updated = profileManager.setConfig(nextConfig);
+        comms.sendMessage(updated ? CMD19_ACK : CMD19_ERR, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_PROFILE_GET:
+    {
+        char packet[OUTPUT_LEN];
+        profileManager.formatConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_BALANCE_CONFIG_SET:
+    {
+        const output_message cmd = comms.lastCommand();
+        const BalanceConfigPayload& payload = cmd.payload.balanceConfig;
+        RuntimeBalanceConfig nextConfig;
+        nextConfig.holdMs = payload.holdMs;
+        nextConfig.stopPressureDeltaKpa = payload.stopPressureDeltaKpa;
+        nextConfig.stopPressureSamples = payload.stopPressureSamples;
+        nextConfig.samplePeriodMs = payload.samplePeriodMs;
+
+        const bool updated = runtimeConfig.setBalanceConfig(nextConfig);
+        comms.sendMessage(updated ? CMD21_ACK : CMD21_ERR, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_BALANCE_CONFIG_GET:
+    {
+        char packet[OUTPUT_LEN];
+        runtimeConfig.formatBalanceConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_MOTOR_CONFIG_SET:
+    {
+        const output_message cmd = comms.lastCommand();
+        const MotorConfigPayload& payload = cmd.payload.motorConfig;
+        RuntimeMotorConfig nextConfig;
+        nextConfig.maxSpeed = payload.maxSpeed;
+        nextConfig.maxAcceleration = payload.maxAcceleration;
+        nextConfig.homingSpeed = payload.homingSpeed;
+        nextConfig.testSpeed = payload.testSpeed;
+
+        const bool updated = runtimeConfig.setMotorConfig(nextConfig);
+        comms.sendMessage(updated ? CMD23_ACK : CMD23_ERR, 1000);
+        g_status = CMD_IDLE;
+        break;
+    }
+
+    // -----------------------------------------------------------------------
+    case CMD_MOTOR_CONFIG_GET:
+    {
+        char packet[OUTPUT_LEN];
+        runtimeConfig.formatMotorConfigJson(packet, sizeof(packet));
+        comms.sendMessage(packet, 1000);
         g_status = CMD_IDLE;
         break;
     }
@@ -483,8 +578,10 @@ void loop() {
 // PID TUNING — comandi via seriale USB diretta
 //
 // Comandi accettati (uno per riga, terminato da \n):
-//   PARAMS <kp> <ki> <kd>             — aggiorna guadagni PID
-//   PARAMS_EXT <period_ms> <alpha_d>  — aggiorna periodo tick e LPF coeff
+//   PID_CONFIG_SET <kp> <ki> <kd> <period_ms> <alpha_d> <integral_limit>
+//                  <min_retarget_frac> <u_neutral>
+//                                      — aggiorna e salva configurazione PID
+//   PID_CONFIG_GET                    — stampa configurazione PID corrente
 //   SYRINGE_SET <u_norm> <dur_s>      — siringa a posizione normalizzata [0,1]
 //                                       per N secondi, log depth ogni 100 ms
 //   PID_HOLD <depth_m> <dur_s>        — PID a quota X per N secondi, log a 5 Hz
@@ -492,6 +589,16 @@ void loop() {
 //                                       max 60 s (esci a regime), log a 10 Hz
 //   SURFACE_OFFSET <m>                — target di galleggiamento: il top del
 //                                       float sta a <m> sotto il pelo (default 0.10)
+//   SIM_ON / SIM_OFF                  — simulatore barometro on/off. Il motore si
+//                                       muove DAVVERO; la quota è simulata da un
+//                                       modello fisico mosso dalla siringa. Poi usa
+//                                       PID_STEP/PID_HOLD/GO per tarare il PID a secco.
+//   SIM_GET                           — stato e parametri del simulatore
+//   SIM_CONFIG <uNeutral> <accelGain> <dragQuad> <poolDepth>
+//                                      — ritara la fisica del simulatore a runtime
+//   GO                                — lancia la missione completa (profili +
+//                                       sosta) da seriale, senza GUI/ESPB. Con SIM
+//                                       attivo = test end-to-end al banco a secco.
 //
 // Tutto il logging finisce su Serial (USB), formato CSV per facile import.
 // ---------------------------------------------------------------------------
@@ -509,30 +616,35 @@ static void servicePidTuningSerial() {
 
             // Tokenize semplice (solo separatore spazio)
             const char* cstr = line.c_str();
-            char buf[96];
+            char buf[192];
             strncpy(buf, cstr, sizeof(buf) - 1);
             buf[sizeof(buf) - 1] = '\0';
             char* tok = strtok(buf, " ");
             if (!tok) return;
 
-            if (strcmp(tok, "PARAMS") == 0) {
-                char* a = strtok(nullptr, " ");
-                char* b = strtok(nullptr, " ");
-                char* d = strtok(nullptr, " ");
-                if (!a || !b || !d) { Debug.println("ERR: PARAMS <kp> <ki> <kd>"); return; }
-                pidController.Kp = atof(a);
-                pidController.Ki = atof(b);
-                pidController.Kd = atof(d);
-                Debug.printf("OK PARAMS Kp=%.4f Ki=%.4f Kd=%.4f\n",
-                              pidController.Kp, pidController.Ki, pidController.Kd);
-            } else if (strcmp(tok, "PARAMS_EXT") == 0) {
-                char* a = strtok(nullptr, " ");
-                char* b = strtok(nullptr, " ");
-                if (!a || !b) { Debug.println("ERR: PARAMS_EXT <period_ms> <alpha_d>"); return; }
-                pidController.periodMs = (uint16_t)constrain(atof(a), 20.0f, 500.0f);
-                pidController.alphaD   = constrain((float)atof(b), 0.05f, 1.0f);
-                Debug.printf("OK PARAMS_EXT period=%u alpha=%.3f\n",
-                              pidController.periodMs, pidController.alphaD);
+            if (strcmp(tok, "PID_CONFIG_SET") == 0) {
+                char* values[8] = {};
+                for (char*& value : values) {
+                    value = strtok(nullptr, " ");
+                    if (!value) {
+                        Debug.println("ERR: PID_CONFIG_SET <kp> <ki> <kd> <period_ms> <alpha_d> <integral_limit> <min_retarget_frac> <u_neutral>");
+                        return;
+                    }
+                }
+                RuntimePidConfig config;
+                config.kp = atof(values[0]);
+                config.ki = atof(values[1]);
+                config.kd = atof(values[2]);
+                config.periodMs = static_cast<uint16_t>(atof(values[3]));
+                config.alphaD = atof(values[4]);
+                config.integralLimit = atof(values[5]);
+                config.minRetargetFrac = atof(values[6]);
+                config.uNeutral = atof(values[7]);
+                Debug.println(runtimeConfig.setPidConfig(config) ? "OK PID_CONFIG_SET" : "ERR PID_CONFIG_SET invalid");
+            } else if (strcmp(tok, "PID_CONFIG_GET") == 0) {
+                char packet[OUTPUT_LEN];
+                runtimeConfig.formatPidConfigJson(packet, sizeof(packet));
+                Debug.println(packet);
             } else if (strcmp(tok, "SYRINGE_SET") == 0) {
                 char* a = strtok(nullptr, " ");
                 char* b = strtok(nullptr, " ");
@@ -552,12 +664,59 @@ static void servicePidTuningSerial() {
                 if (!a) { Debug.println("ERR: SURFACE_OFFSET <m>"); return; }
                 sensors.setSurfaceTargetOffset(atof(a));
                 Debug.printf("OK SURFACE_OFFSET %.3f m\n", sensors.surfaceTargetOffset());
+            } else if (strcmp(tok, "SIM_ON") == 0) {
+                sensors.simEnable(true);
+                Debug.println("OK SIM_ON (barometro simulato, motore reale)");
+            } else if (strcmp(tok, "SIM_OFF") == 0) {
+                sensors.simEnable(false);
+                Debug.println("OK SIM_OFF");
+            } else if (strcmp(tok, "SIM_GET") == 0) {
+                char buf[176];
+                sensors.simFormatStatus(buf, sizeof(buf));
+                Debug.println(buf);
+            } else if (strcmp(tok, "SIM_CONFIG") == 0) {
+                char* values[4] = {};
+                for (char*& value : values) {
+                    value = strtok(nullptr, " ");
+                    if (!value) {
+                        Debug.println("ERR: SIM_CONFIG <uNeutral> <accelGain> <dragQuad> <poolDepth>");
+                        return;
+                    }
+                }
+                sensors.simConfigure(atof(values[0]), atof(values[1]),
+                                     atof(values[2]), atof(values[3]));
+                Debug.println("OK SIM_CONFIG");
+            } else if (strcmp(tok, "GO") == 0) {
+                // Lancia la missione completa (profileCount profili + sosta)
+                // direttamente da seriale, senza GUI/ESPB: utile col SIM per il
+                // test end-to-end al banco. Bloccante fino a fine missione;
+                // per fermarla prima resetta ESPA.
+                if (!motionController.motionAllowed()) {
+                    Debug.println("ERR: GO — motion not allowed (serve homing ok)");
+                    return;
+                }
+                Debug.println("# GO: missione completa (profili + sosta). Reset ESPA per abortire.");
+                uint8_t completed = 0;
+                const bool aborted = runVerticalProfiles(completed);
+                if (aborted) attemptAutoRecovery();
+                Debug.printf("# GO done: %u/%u profili%s\n",
+                             completed, profileManager.config().profileCount,
+                             aborted ? " (ABORT)" : "");
+            } else if (strcmp(tok, "DUMP_LOG") == 0) {
+                // Dump del flash log su richiesta: risolve il caso in cui il
+                // serial monitor si collega dopo il dump automatico nel setup().
+                // NON azzera il log, così può essere riletto più volte.
+                Serial.println("===== FLASH LOG DUMP (on demand) BEGIN =====");
+                if (!flashStorage.printLogTo(Serial)) {
+                    Serial.println("(no log or flash unavailable)");
+                }
+                Serial.println("===== FLASH LOG DUMP END =====");
             } else {
                 Debug.printf("ERR: unknown cmd '%s'\n", tok);
             }
             return;
         }
-        if (g_serialLineBuf.length() < 95) g_serialLineBuf += c;
+        if (g_serialLineBuf.length() < 191) g_serialLineBuf += c;
     }
 }
 
@@ -580,13 +739,91 @@ static void runSyringeSet(float uNorm, float durationS) {
 
     const unsigned long t0 = millis();
     unsigned long lastLog = 0;
+    unsigned long lastTofSampleMs = 0;
     while (millis() - t0 < (unsigned long)(durationS * 1000.0f)) {
         if (Serial.available()) { Debug.println("# aborted"); break; }
+        // Supervisione TOF su ogni movimento: fondo corsa esteso (tappo) = stop
+        // pulito; oltre il limite superiore = emergency (già scattato dentro).
+        const TofGuard guard = motionController.tofGuard(millis(), lastTofSampleMs, "syringe");
+        if (guard == TofGuard::ExtendLimit) {
+            motor.stop();
+            Debug.println("# extension limit (TOF)");
+        } else if (guard == TofGuard::Emergency) {
+            Debug.println("# aborted (TOF)");
+            break;
+        }
         if (millis() - lastLog >= 100) {
             lastLog = millis();
             sensors.read();
             Debug.printf("%lu,%.3f,%ld\n",
                           millis() - t0, sensors.depth(), motor.position());
+        }
+        ledController.update();
+        yield();
+    }
+    motor.stop();
+    motor.disableOutputs();
+    Debug.println("# done");
+}
+
+// Loop PID condiviso da PID_HOLD e PID_STEP: tiene la quota target per
+// durationMs, ricalcolando il setpoint a pidController.periodMs e loggando il
+// CSV ogni logPeriodMs. La supervisione TOF, il deadband e la saturazione al
+// fondo corsa sono identici fra i due comandi: vivono qui per non divergere.
+static void runPidLoop(float depthTarget, unsigned long durationMs, unsigned long logPeriodMs) {
+    pidController.reset();
+    motor.enableOutputs();
+
+    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
+    const long deadbandSteps = (long)(pidController.minRetargetFrac * (float)usable);
+    long lastCommandedTarget = motor.position();
+
+    const unsigned long t0 = millis();
+    unsigned long lastTick = 0;
+    unsigned long lastLog  = 0;
+    unsigned long lastTofSampleMs = 0;
+    bool atExtensionLimit = false;  // pistone fermo al fondo corsa (tappo): non ricomandare verso l'estensione
+    while (millis() - t0 < durationMs) {
+        if (Serial.available()) { Debug.println("# aborted"); break; }
+        if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
+
+        // Supervisione TOF su ogni movimento. ExtendLimit = saturazione normale a
+        // piena estensione: NON aborte, ferma e inibisce ulteriore estensione
+        // finché il PID non chiede di risalire. Emergency = anomalia → abort.
+        const TofGuard guard = motionController.tofGuard(millis(), lastTofSampleMs, "pid");
+        if (guard == TofGuard::ExtendLimit) {
+            if (!atExtensionLimit) {
+                motor.stop();
+                lastCommandedTarget = motor.position();
+                atExtensionLimit = true;
+            }
+        } else if (guard == TofGuard::Emergency) {
+            Debug.println("# aborted (TOF)");
+            break;
+        }
+
+        if (millis() - lastTick >= pidController.periodMs) {
+            lastTick = millis();
+            sensors.read();
+            const float depth = sensors.depth();
+            const float u = pidController.computeNormalized(depthTarget, depth);
+            const long posTarget = uToMotorPos(u);
+            // In saturazione al fondo corsa accetta solo target che fanno
+            // RISALIRE (verso home = pos più alta); ignora richieste di ulteriore
+            // estensione, che riaprirebbero il tappo.
+            const bool retreating = posTarget > motor.position();
+            if ((!atExtensionLimit || retreating) &&
+                labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
+                motor.startMoveTo(posTarget);
+                lastCommandedTarget = posTarget;
+                atExtensionLimit = false;
+            }
+            if (millis() - lastLog >= logPeriodMs) {
+                lastLog = millis();
+                Debug.printf("%lu,%.3f,%.3f,%.3f,%.3f,%ld\n",
+                              millis() - t0, depth, depthTarget,
+                              depthTarget - depth, u, motor.position());
+            }
         }
         ledController.update();
         yield();
@@ -615,43 +852,7 @@ static void runPidHold(float depthTarget, float durationS) {
                   pidController.periodMs, pidController.alphaD);
     Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
 
-    pidController.reset();
-    motor.enableOutputs();
-
-    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
-    const long deadbandSteps = (long)(PID_MIN_RETARGET_FRAC * (float)usable);
-    long lastCommandedTarget = motor.position();
-
-    const unsigned long t0 = millis();
-    unsigned long lastTick = 0;
-    unsigned long lastLog  = 0;
-    while (millis() - t0 < (unsigned long)(durationS * 1000.0f)) {
-        if (Serial.available()) { Debug.println("# aborted"); break; }
-        if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
-
-        if (millis() - lastTick >= pidController.periodMs) {
-            lastTick = millis();
-            sensors.read();
-            const float depth = sensors.depth();
-            const float u = pidController.computeNormalized(depthTarget, depth);
-            const long posTarget = uToMotorPos(u);
-            if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
-                motor.startMoveTo(posTarget);
-                lastCommandedTarget = posTarget;
-            }
-            if (millis() - lastLog >= 200) {
-                lastLog = millis();
-                Debug.printf("%lu,%.3f,%.3f,%.3f,%.3f,%ld\n",
-                              millis() - t0, depth, depthTarget,
-                              depthTarget - depth, u, motor.position());
-            }
-        }
-        ledController.update();
-        yield();
-    }
-    motor.stop();
-    motor.disableOutputs();
-    Debug.println("# done");
+    runPidLoop(depthTarget, (unsigned long)(durationS * 1000.0f), 200);
 }
 
 // Step response: cambio istantaneo del setpoint, esci a 60 s.
@@ -668,41 +869,69 @@ static void runPidStep(float depthTarget) {
                   pidController.periodMs, pidController.alphaD);
     Debug.println("# t_ms,depth_m,target_m,error_m,u_norm,motor_pos");
 
-    pidController.reset();
-    motor.enableOutputs();
+    runPidLoop(depthTarget, 60000UL, 100);
+}
 
-    const long usable = (long)MOTOR_MAX_STEPS - 2L * (long)MOTOR_ENDSTOP_MARGIN;
-    const long deadbandSteps = (long)(PID_MIN_RETARGET_FRAC * (float)usable);
-    long lastCommandedTarget = motor.position();
+// ---------------------------------------------------------------------------
+// Missione completa: profileCount profili (discesa→hold→risalita→hold) + sosta
+// finale. Riusata dal case CMD_GO (GUI/ESP-NOW/auto) e dal comando seriale
+// diretto "GO" (test al banco / simulatore). Ritorna true se abortita da
+// emergency stop; scrive in completedProfiles il numero di profili conclusi.
+static bool runVerticalProfiles(uint8_t& completedProfiles) {
+    completedProfiles = 0;
+    bool aborted = false;
+    const RuntimeProfileConfig& profileConfig = profileManager.config();
+    Debug.println("Mission: starting vertical profiles");
 
-    const unsigned long t0 = millis();
-    unsigned long lastTick = 0;
-    unsigned long lastLog  = 0;
-    while (millis() - t0 < 60000UL) {
-        if (Serial.available()) { Debug.println("# aborted"); break; }
-        if (motionController.remoteStopRequested()) { Debug.println("# remote stop"); break; }
+    profileManager.resetEEPROM();
+    profileManager.logDeploymentPacket();
 
-        if (millis() - lastTick >= pidController.periodMs) {
-            lastTick = millis();
-            sensors.read();
-            const float depth = sensors.depth();
-            const float u = pidController.computeNormalized(depthTarget, depth);
-            const long posTarget = uToMotorPos(u);
-            if (labs(posTarget - lastCommandedTarget) >= deadbandSteps) {
-                motor.startMoveTo(posTarget);
-                lastCommandedTarget = posTarget;
-            }
-            if (millis() - lastLog >= 100) {
-                lastLog = millis();
-                Debug.printf("%lu,%.3f,%.3f,%.3f,%.3f,%ld\n",
-                              millis() - t0, depth, depthTarget,
-                              depthTarget - depth, u, motor.position());
-            }
-        }
-        ledController.update();
-        yield();
+    while (completedProfiles < profileConfig.profileCount && motionController.motionAllowed()) {
+        profileManager.beginProfile(completedProfiles + 1);
+        Debug.printf("Profile %d: PID descent to %.2f m bottom reference\n",
+                     completedProfiles + 1, profileConfig.descentTargetM);
+        profileManager.measure(profileConfig.descentTargetM,
+                               profileConfig.holdTimeS,
+                               profileConfig.descentTimeoutS);
+        if (!motionController.motionAllowed()) { aborted = true; break; }
+
+        delay(500);
+
+        Debug.printf("Profile %d: PID ascent to %.2f m top reference\n",
+                     completedProfiles + 1, profileConfig.ascentTargetM);
+        profileManager.measure(profileManager.ascentTargetBottomM(),
+                               profileConfig.holdTimeS,
+                               profileConfig.ascentTimeoutS);
+        if (!motionController.motionAllowed()) { aborted = true; break; }
+
+        motor.disableOutputs();
+        completedProfiles++;
+        Debug.printf("Profile %d complete\n", completedProfiles);
+        delay(500);
     }
-    motor.stop();
-    motor.disableOutputs();
-    Debug.println("# done");
+
+    // Sosta finale: tieni la CIMA del float a surfaceRestOffsetM sotto il pelo
+    // (antenna sommersa) finché non arriva il recupero o scade la finestra —
+    // evita di rompere la superficie (penalità) in attesa dell'ROV.
+    if (!aborted && motionController.motionAllowed()) {
+        Debug.printf("Mission: surface rest, top at %.2f m below surface\n",
+                     profileConfig.surfaceRestOffsetM);
+        profileManager.measure(profileManager.restTargetBottomM(),
+                               profileConfig.holdTimeS,
+                               REST_WINDOW_S);
+        if (!motionController.motionAllowed()) aborted = true;
+    }
+
+    return aborted;
+}
+
+// Auto-recovery su abort: l'homing cancella l'emergency stop e riporta la siringa
+// in posizione nota (galleggiamento), così il float risale e resta pronto.
+static void attemptAutoRecovery() {
+    Debug.println("Profile aborted by emergency stop — attempting auto-recovery");
+    if (motionController.homeWithTof()) {
+        Debug.println("Auto-recovery homing complete — float ready");
+    } else {
+        Debug.println("Auto-recovery homing FAILED — float remains in error");
+    }
 }

@@ -15,14 +15,16 @@
 
 class PIDController {
 public:
-    // Mutabili a runtime via CMD_UPDATE_PID (8)
+    // Mutabili a runtime via PID_CONFIG_SET (8)
     float Kp;
     float Ki;
     float Kd;
 
-    // Mutabili a runtime via CMD_UPDATE_PID_EXT (14)
+    // Mutabili a runtime via PID_CONFIG_SET (8)
     float    alphaD;     // LPF coefficient sulla derivata, in (0, 1]
     uint16_t periodMs;   // Periodo del tick PID nel loop (ms)
+    float    integralLimit;
+    float    minRetargetFrac;
 
     // Offset costante di kick-start; somma direttamente all'output normalizzato
     float uNeutral;

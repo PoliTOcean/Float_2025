@@ -1,0 +1,7 @@
+# Dipendenze per l'uso LOCALE del notebook (su Google Colab sono già presenti).
+# Installa con:  pip install -r requirements.txt
+pandas>=1.5
+numpy>=1.23
+matplotlib>=3.6
+jupyter>=1.0
+ipywidgets>=8.0

@@ -31,7 +31,7 @@ void setEspNowChannel() {
 CommsManager::CommsManager() {
     _instance = this;
     memset(&status_to_send, 0, sizeof(status_to_send));
-    memset(&_received,      0, sizeof(_received));
+    _received = makeOutputMessage(CMD_IDLE);
 }
 
 // ---------------------------------------------------------------------------
@@ -91,8 +91,25 @@ void CommsManager::_reInitEspNow() {
 }
 
 // ---------------------------------------------------------------------------
+output_message CommsManager::lastCommand() const {
+    portENTER_CRITICAL(&_recvMux);
+    const output_message snapshot = _received;
+    portEXIT_CRITICAL(&_recvMux);
+    return snapshot;
+}
+
+// ---------------------------------------------------------------------------
+void CommsManager::clearCommand() {
+    const output_message idle = makeOutputMessage(CMD_IDLE);
+    portENTER_CRITICAL(&_recvMux);
+    _received = idle;
+    portEXIT_CRITICAL(&_recvMux);
+}
+
+// ---------------------------------------------------------------------------
 bool CommsManager::sendMessage(const char* message, uint32_t timeoutMs) {
     strncpy(status_to_send.message, message, sizeof(status_to_send.message) - 1);
+    status_to_send.message[sizeof(status_to_send.message) - 1] = '\0';
 
     _sendResult = -1;
     esp_err_t err = esp_now_send(
@@ -175,6 +192,8 @@ void CommsManager::_onDataSent(const uint8_t* /*mac*/, esp_now_send_status_t sta
 
 void CommsManager::_onDataRecv(const uint8_t* /*mac*/, const uint8_t* data, int len) {
     if (_instance && len == sizeof(output_message)) {
+        portENTER_CRITICAL(&_instance->_recvMux);
         memcpy(&_instance->_received, data, sizeof(output_message));
+        portEXIT_CRITICAL(&_instance->_recvMux);
     }
 }

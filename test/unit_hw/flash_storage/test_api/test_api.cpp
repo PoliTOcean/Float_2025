@@ -20,10 +20,10 @@
 
 namespace {
 constexpr char EXPECTED_CSV[] =
-    "company_number,profile_id,time_s,pressure_kpa,depth_m,phase,sensor_depth_m\n"
-    "EX10,1,0.00,101.30,0.00,start,-0.51\n"
-    "EX10,1,5.00,126.00,2.50,hold_2_5m,1.99\n"
-    "EX10,1,10.00,126.20,2.52,hold_2_5m,2.01\n";
+    "company_number,profile_id,time_s,pressure_kpa,depth_m,phase,sensor_depth_m,syringe_u\n"
+    "EX10,1,0.00,101.30,0.00,start,-0.51,0.0000\n"
+    "EX10,1,5.00,126.00,2.50,hold_2_5m,1.99,0.5000\n"
+    "EX10,1,10.00,126.20,2.52,hold_2_5m,2.01,1.0000\n";
 }
 
 void setUp() {}
@@ -45,9 +45,9 @@ void test_flash_csv_logging() {
     const size_t headerSize = flashStorage.logSize();
     TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(0, headerSize, "CSV header was not written");
 
-    TEST_ASSERT_TRUE(flashStorage.appendRecord(COMPANY_NUMBER, 1, 0.0f, 101.3f, 0.00f, "start", -0.51f));
-    TEST_ASSERT_TRUE(flashStorage.appendRecord(COMPANY_NUMBER, 1, 5.0f, 126.0f, 2.50f, "hold_2_5m", 1.99f));
-    TEST_ASSERT_TRUE(flashStorage.appendRecord(COMPANY_NUMBER, 1, 10.0f, 126.2f, 2.52f, "hold_2_5m", 2.01f));
+    TEST_ASSERT_TRUE(flashStorage.appendRecord(COMPANY_NUMBER, 1, 0.0f, 101.3f, 0.00f, "start", -0.51f, 0.0f));
+    TEST_ASSERT_TRUE(flashStorage.appendRecord(COMPANY_NUMBER, 1, 5.0f, 126.0f, 2.50f, "hold_2_5m", 1.99f, 0.5f));
+    TEST_ASSERT_TRUE(flashStorage.appendRecord(COMPANY_NUMBER, 1, 10.0f, 126.2f, 2.52f, "hold_2_5m", 2.01f, 1.0f));
     TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(headerSize, flashStorage.logSize(), "CSV log did not grow");
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(strlen(EXPECTED_CSV), flashStorage.logSize(), "CSV log size mismatch");
 

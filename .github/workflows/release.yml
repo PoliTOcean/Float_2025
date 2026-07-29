@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        environment: [espA, espB, espA_pool]
+        environment: [espA, espB]
 
     steps:
       - name: Checkout

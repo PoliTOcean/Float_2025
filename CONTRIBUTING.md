@@ -57,17 +57,16 @@ Subject in imperative ("add X", not "added X" / "adds X"), <72 chars. Body expla
 ### Pull request expectations
 
 - The branch must be **rebased on `master`** before merging (or at least up-to-date) — the PR UI will warn if not.
-- All [CI checks](.github/workflows/ci.yml) must be green: `build (espA)`, `build (espB)`, `build (espA_pool)`.
+- All [CI checks](.github/workflows/ci.yml) must be green: `build (espA)`, `build (espB)`.
 - At least **one approving review** from another maintainer.
 - Description should state *what* changes and *why*, plus a manual test plan if the change touches motion/PID/comms (CI does not run hardware tests).
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to any branch and on every pull request to `master`. It compiles all three PlatformIO environments in parallel:
+`.github/workflows/ci.yml` runs on every push to any branch and on every pull request to `master`. It compiles both PlatformIO environments in parallel:
 
 - `espA` — float controller firmware
 - `espB` — communication bridge firmware
-- `espA_pool` — float controller with shallow-pool profile
 
 Caching of PlatformIO core and build artifacts keeps a typical run under 2 minutes after the first warm-up.
 
@@ -75,7 +74,7 @@ Caching of PlatformIO core and build artifacts keeps a typical run under 2 minut
 
 ### Releases
 
-Push a tag like `v11.3.0` and the [release workflow](.github/workflows/release.yml) builds all three environments and publishes a GitHub Release with the `firmware.bin` and `firmware.elf` for each one attached.
+Push a tag like `v11.3.0` and the [release workflow](.github/workflows/release.yml) builds both environments and publishes a GitHub Release with the `firmware.bin` and `firmware.elf` for each one attached.
 
 ```bash
 # After the change is merged to master:
@@ -99,7 +98,7 @@ Enable:
   - Dismiss stale pull request approvals when new commits are pushed
 - Require status checks to pass before merging
   - Require branches to be up to date before merging
-  - Status checks: `Build espA`, `Build espB`, `Build espA_pool`
+  - Status checks: `Build espA`, `Build espB`
 - Do not allow bypassing the above settings (recommended)
 - Restrict who can push to matching branches (admin only — for emergency hotfixes)
 
@@ -110,7 +109,6 @@ gh api -X PUT repos/:owner/:repo/branches/master/protection \
   -F required_status_checks.strict=true \
   -F 'required_status_checks.contexts[]=Build espA' \
   -F 'required_status_checks.contexts[]=Build espB' \
-  -F 'required_status_checks.contexts[]=Build espA_pool' \
   -F enforce_admins=false \
   -F required_pull_request_reviews.required_approving_review_count=1 \
   -F required_pull_request_reviews.dismiss_stale_reviews=true \

@@ -1,0 +1,58 @@
+<svg viewBox="0 0 960 360" xmlns="http://www.w3.org/2000/svg" role="img" font-family="Segoe UI, Arial, sans-serif">
+  <title>MISSION - sottostati</title>
+  <desc>Sequenza PRE_DESCEND, DESCEND, ASCEND, REST verso IDLE, con loop dei profili.</desc>
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#56617a"/></marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="360" fill="#f6f8fb"/>
+  <rect x="1" y="1" width="958" height="358" fill="none" stroke="#d4dbe6"/>
+  <text x="30" y="34" font-size="18" font-weight="700" fill="#17273f">MISSION ▸</text>
+  <text x="30" y="53" font-size="12" fill="#5a6472">safety() TOF attivo in ogni fase PID → anomalia = SAFE_STOP (auto-recovery)</text>
+
+  <!-- initial dot -->
+  <circle cx="22" cy="200" r="6" fill="#33415c"/>
+  <line x1="28" y1="200" x2="45" y2="200" stroke="#56617a" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- loopback (next profile) -->
+  <polyline points="530,168 530,110 320,110 320,168" fill="none" stroke="#56617a" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="425" y="100" text-anchor="middle" font-size="11.5" fill="#40495c" font-family="Consolas, monospace">[phase_r≠0 &amp;&amp; completati &lt; count]  {completati++}</text>
+
+  <!-- states -->
+  <g font-size="13.5" font-weight="600" fill="#17273f">
+    <rect x="45" y="168" width="150" height="62" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="120" y="194" text-anchor="middle">M_PRE_DESCEND</text>
+    <text x="120" y="213" text-anchor="middle" font-size="10.5" font-weight="400" fill="#5a6472">log deployment</text>
+
+    <rect x="255" y="168" width="150" height="62" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="330" y="190" text-anchor="middle">M_DESCEND</text>
+    <text x="330" y="208" text-anchor="middle" font-size="10.5" font-weight="400" fill="#5a6472">PID→2.5 m +hold</text>
+    <text x="330" y="221" text-anchor="middle" font-size="10.5" font-weight="400" fill="#5a6472">(kick)</text>
+
+    <rect x="465" y="168" width="150" height="62" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="540" y="194" text-anchor="middle">M_ASCEND</text>
+    <text x="540" y="213" text-anchor="middle" font-size="10.5" font-weight="400" fill="#5a6472">PID→0.88 m +hold</text>
+
+    <rect x="675" y="168" width="150" height="62" rx="9" fill="#e2ebf9" stroke="#4372b8" stroke-width="1.6"/>
+    <text x="750" y="190" text-anchor="middle">M_REST</text>
+    <text x="750" y="208" text-anchor="middle" font-size="10.5" font-weight="400" fill="#5a6472">PID→0.63 m</text>
+    <text x="750" y="221" text-anchor="middle" font-size="10.5" font-weight="400" fill="#5a6472">esce solo a timeout</text>
+
+    <rect x="875" y="171" width="70" height="56" rx="9" fill="#dff0e6" stroke="#3a915f" stroke-width="1.8"/>
+    <text x="910" y="203" text-anchor="middle" fill="#1e4d33">IDLE</text>
+  </g>
+
+  <!-- transitions -->
+  <g stroke="#56617a" stroke-width="1.6" fill="none">
+    <line x1="195" y1="199" x2="255" y2="199" marker-end="url(#arr)"/>
+    <line x1="405" y1="199" x2="465" y2="199" marker-end="url(#arr)"/>
+    <line x1="615" y1="199" x2="675" y2="199" marker-end="url(#arr)"/>
+    <line x1="825" y1="199" x2="875" y2="199" marker-end="url(#arr)"/>
+  </g>
+  <g font-size="11" fill="#40495c" font-family="Consolas, monospace" text-anchor="middle">
+    <text x="225" y="188">[after 1 tick]</text>
+    <text x="435" y="190">[phase_r≠0]</text>
+    <text x="645" y="182">[phase_r≠0 &amp;&amp;</text>
+    <text x="645" y="194">compl.==count]</text>
+    <text x="850" y="190">[phase_r==2]</text>
+  </g>
+</svg>

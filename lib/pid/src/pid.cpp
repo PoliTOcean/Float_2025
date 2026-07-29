@@ -18,6 +18,8 @@ PIDController::PIDController(float kp, float ki, float kd)
     : Kp(kp), Ki(ki), Kd(kd),
       alphaD(PID_ALPHA_D_DEFAULT),
       periodMs(PID_PERIOD_DEFAULT_MS),
+      integralLimit(PID_INTEGRAL_LIMIT),
+      minRetargetFrac(PID_MIN_RETARGET_FRAC),
       uNeutral(PID_U_NEUTRAL) {}
 
 void PIDController::reset() {
@@ -56,7 +58,7 @@ float PIDController::computeNormalized(float targetDepth, float currentDepth) {
     const bool satLow  = (uRaw < 0.0f);
     if (!((satHigh && error > 0.0f) || (satLow && error < 0.0f))) {
         _integral += error * dt;
-        _integral = constrain(_integral, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT);
+        _integral = constrain(_integral, -integralLimit, integralLimit);
     }
 
     _lastDepth    = currentDepth;

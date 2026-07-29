@@ -33,7 +33,8 @@ public:
                       float pressureKpa,
                       float depthM,
                       const char* phase,
-                      float sensorDepthM);
+                      float sensorDepthM,
+                      float syringeU);
 
     // Transmit CSV records whose time matches DATA_PACKET_PERIOD_MS.
     bool transmitDataPackets(PacketSender sender, uint32_t timeoutMs);

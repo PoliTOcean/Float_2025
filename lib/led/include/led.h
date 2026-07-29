@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <RGBLed.h>
+#include "float_common.h"
 
 /*
  *******************************************************************************
@@ -11,22 +12,6 @@
  * Maintainers: Colabella Davide, Benevenga Filippo — Team PoliTOcean
  *******************************************************************************
  */
-
-enum class LEDState : uint8_t {
-    OFF,
-    INIT,
-    IDLE,
-    IDLE_WITH_DATA,
-    LOW_BATTERY,
-    ERROR,
-    PROFILE,
-    AUTO_MODE,
-    HOMING,
-    MOTOR_MOVING,
-    PID_CONTROL,
-    COMMUNICATION,
-    OTA_MODE,
-};
 
 class LEDController {
 public:
